@@ -63,6 +63,8 @@ public class RMWebApp extends WebApp implements YarnWebParams {
     route("/cluster", RmController.class, "about");
     route(pajoin("/app", APPLICATION_ID), RmController.class, "app");
     route("/scheduler", RmController.class, "scheduler");
+    route("/atlas", RmController.class, "atlas");
+    route("/atlasData", RmController.class, "atlasData");
     route(pajoin("/queue", QUEUE_NAME), RmController.class, "queue");
     route("/nodelabels", RmController.class, "nodelabels");
     route(pajoin("/appattempt", APPLICATION_ATTEMPT_ID), RmController.class,

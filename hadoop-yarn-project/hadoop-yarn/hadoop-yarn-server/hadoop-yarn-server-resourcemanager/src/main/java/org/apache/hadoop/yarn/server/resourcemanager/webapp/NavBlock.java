@@ -58,7 +58,8 @@ public class NavBlock extends HtmlBlock {
     }
     subAppsList._()._();
     UL<DIV<Hamlet>> tools = mainList.
-          li().a(url("scheduler"), "Scheduler")._()._().
+          li().a(url("scheduler"), "Scheduler")._().
+	  li().a(url("atlas"), "Atlas")._()._().
         h3("Tools").ul();
     tools.li().a("/conf", "Configuration")._().
           li().a("/logs", "Local logs")._().

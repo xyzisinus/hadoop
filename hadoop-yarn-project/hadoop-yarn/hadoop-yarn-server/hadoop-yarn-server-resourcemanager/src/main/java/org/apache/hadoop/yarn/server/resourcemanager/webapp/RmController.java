@@ -117,4 +117,12 @@ public class RmController extends Controller {
   public void logaggregationstatus() {
     render(AppLogAggregationStatusPage.class);
   }
+
+  public void atlas() {
+    render(AtlasPage.class);
+    }
+
+  public void atlasData() {
+    render(AtlasData.class);
+  }
 }
