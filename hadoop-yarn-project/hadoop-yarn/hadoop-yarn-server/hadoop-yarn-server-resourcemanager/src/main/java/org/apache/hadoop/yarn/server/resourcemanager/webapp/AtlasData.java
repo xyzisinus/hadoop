@@ -25,12 +25,9 @@ import com.google.gson.JsonPrimitive;
 
 import java.io.FileWriter;
 import java.io.IOException;
-import java.util.*;
+import java.util.Collection;
 import java.util.concurrent.ConcurrentMap;
-import java.util.concurrent.TimeUnit;
 
-// import org.apache.commons.lang3.tuple.Pair;
-import org.apache.hadoop.yarn.api.records.ApplicationAttemptId;
 import org.apache.hadoop.yarn.server.resourcemanager.ResourceManager;
 
 import com.google.inject.Inject;
@@ -69,13 +66,11 @@ public class AtlasData extends TextView {
     JsonArray nodes = new JsonArray();
     JsonArray applications = new JsonArray();
 
-
     try {
       String base_path = System.getenv("HADOOP_HOME");
       FileWriter dump = new FileWriter(base_path + "/czangdump.txt", true);
 
       ResourceScheduler sched = rm.getResourceScheduler();
-      Map<NodeId, Integer> node2part = new HashMap<>();
       Collection<RMNode> rmNodes = this.rm.getRMContext().getRMNodes().values();
       for (RMNode ni : rmNodes) {
         NodeInfo info = new NodeInfo(ni, sched);
@@ -93,22 +88,13 @@ public class AtlasData extends TextView {
         JsonObject applicationInfo = new JsonObject();
         applicationInfo.addProperty("appName", app.getName());
         applicationInfo.addProperty("applicationId", app.getApplicationId().toString());
-        applicationInfo.addProperty("applicationAttemptId", app.getCurrentAppAttempt().getAppAttemptId().toString());
-        applicationInfo.addProperty("reservationId", app.getReservationId() == null ? null : app.getReservationId().toString());
         applicationInfo.addProperty("startTime", app.getStartTime());
         applicationInfo.addProperty("finishTime", app.getFinishTime());
         applicationInfo.addProperty("state", app.getState().toString());
 
-        JsonObject tooltipInfo = new JsonObject();
-        // parse job name
-        String[] parts = app.getName().split("_");
-        long deadline = TimeUnit.MILLISECONDS.convert(Long.parseLong(parts[8]), TimeUnit.SECONDS);
-        applicationInfo.add("tooltip_info", tooltipInfo);
-
         dump.write("startTime: " + app.getStartTime() + "\n");
         JsonArray ranNodes = new JsonArray();
         JsonArray containersToClient = new JsonArray();
-        JsonArray pendingAllocations = new JsonArray();
 
         if (app.getState() == RMAppState.RUNNING) {
           @SuppressWarnings("unchecked")
@@ -146,19 +132,21 @@ public class AtlasData extends TextView {
         applications.add(applicationInfo);
       }
 
+      JsonObject nodesAndApps = new JsonObject();
+      nodesAndApps.add("nodes", nodes);
+      nodesAndApps.add("apps", applications);
+
+      puts(serial.toJson(nodesAndApps));
+
+      // dump.write("final redering: " + serial.toJson(nodesAndApps) + "\n");
       dump.write("The end\n");
       dump.close();
+      return;
 
     } catch (IOException e) {
       LOG.error("[TETRIS] Failed to write to dump file");
       puts(NODATA);
       return;
     }
-
-    JsonObject nodesAndApps = new JsonObject();
-    nodesAndApps.add("nodes", nodes);
-    nodesAndApps.add("apps", applications);
-
-    puts(serial.toJson(nodesAndApps));
   }
 }

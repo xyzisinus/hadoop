@@ -29,11 +29,7 @@ public class AtlasPage extends RmView {
   static class AtlasBlock extends HtmlBlock {
     @Override
     public void render(Block html) {
-      html.link().$rel("stylesheet").$href("/static/graph/css/nv.d3.css")._();
-      html.script().$type("text/javascript").$src("/static/graph/js/d3.v3.js")._();
-      html.script().$type("text/javascript").$src("/static/graph/js/nv.d3.min.js")._();
-      html.script().$type("text/javascript").$src("/static/graph/js/underscore.min.js")._();
-      // external packages for the atlas page
+      html.script().$type("text/javascript").$src("/static/atlas/thirdParty/d3.v3.js")._();
       html.script().$type("text/javascript").$src("/static/atlas/thirdParty/highcharts.src.js")._();
       html.script().$type("text/javascript").$src("/static/atlas/thirdParty/highcharts-more.src.js")._();
       html.script().$type("text/javascript").$src("/static/atlas/thirdParty/exporting.src.js")._();
