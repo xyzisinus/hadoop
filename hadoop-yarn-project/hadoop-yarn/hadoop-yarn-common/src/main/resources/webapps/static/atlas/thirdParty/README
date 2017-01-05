@@ -1,0 +1,6 @@
+Third party packages needed by the Atlas page:
+
+highcharts (http://www.highcharts.com/)
+grouped-categories (http://blacklabel.github.io/grouped_categories/)
+vis timeline (http://visjs.org/docs/timeline/)
+jquery.switchButton (http://olance.github.io/jQuery-switchButton/)

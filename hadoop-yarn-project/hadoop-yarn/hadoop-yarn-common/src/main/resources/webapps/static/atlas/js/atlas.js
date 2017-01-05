@@ -1,0 +1,1742 @@
+/**
+* Licensed to the Apache Software Foundation (ASF) under one
+* or more contributor license agreements.  See the NOTICE file
+* distributed with this work for additional information
+* regarding copyright ownership.  The ASF licenses this file
+* to you under the Apache License, Version 2.0 (the
+* "License"); you may not use this file except in compliance
+* with the License.  You may obtain a copy of the License at
+*
+*     http://www.apache.org/licenses/LICENSE-2.0
+*
+* Unless required by applicable law or agreed to in writing, software
+* distributed under the License is distributed on an "AS IS" BASIS,
+* WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+* See the License for the specific language governing permissions and
+* limitations under the License.
+*/
+
+var debug = false;
+var useFakeData = false;
+var doRefresh = true;
+var catchServerData = false;
+var errorMsgToDump = '';
+// "counter" is used like console.log('msg', counter++) make sure we see
+// a new msg when it pops up.  The web console likes to lump the same msg
+// together and give it a total count.  We don't want it sometimes.
+var counter = 0;
+var mayStartNowLine = false;
+
+var chartProps = {}; // plotBands/Lines, groupedCategories, nCategories, etc
+var chart = null;
+var timelineBox = null;
+var timeline = null;
+var plotLineInterval = null;
+var series = [];
+var nodesProcessed = false;
+var usePartition = false;
+var chartTitle = null;
+var chartHeight = 0;
+var windowChartWidthDiff = 0;
+
+var havePartitions = false;
+var displayBy = 'partition';  // or partition.  can be preset as default
+var nodeCollection = {};  // node id -> app usage, state, categoriesIdx, etc
+var prevGroupCollection = null;
+var groupCollection = null;
+var groups = null;  // sorted racks or partitions
+var allExpanded = true;  // reflect the collapse/expand all button
+var collapseAllButton = null;
+var justResetCollapseAllButton = false;  // reset button without any action
+
+var appSeriesPrefix = 'Atlas_app_';
+var pendingAllocSeriesPrefix = 'Atlas_pending_allocation_';
+var appFutureSeriesPrefix = 'Atlas_app_future_';
+
+var rackCollection = {};  // rack id -> nodes, expanding state, etc
+var racks = [];  // sorted short rack id
+function rackInfo(rackId) {
+  this.id = rackId;
+}
+rackInfo.prototype.kind = function() {
+  return 'rack';
+};
+rackInfo.prototype.seriesId = function() {
+  return 'Atlas_rack_' + this.id;
+};
+rackInfo.prototype.seriesColor = function() {
+  return 'rgba(255, 165, 0, 0.3)';
+};
+
+var prevPartitionCollection = null;  // last version of partitioning
+var partitionCollection = null;  // partition id -> nodes, expanding state, etc
+var partitions = [];  // sorted short partition id
+function partitionInfo(partitionId) {
+  this.id = partitionId;
+}
+partitionInfo.prototype.kind = function() {
+  return 'partition';
+};
+partitionInfo.prototype.seriesId = function(type) {
+  if (type === 'future') {
+    return 'Atlas_partition_future_' + this.id;
+  } else {
+    return 'Atlas_partition_' + this.id;
+  }
+};
+partitionInfo.prototype.seriesColor = function(type) {
+  return (type === 'future') ?
+    'rgba(135, 204, 175, 0.3)' : 'rgba(255, 165, 0, 0.3)';
+};
+partitionInfo.prototype.pendingAllocSeriesId = function(appId) {
+  return pendingAllocSeriesPrefix + this.id + '_' + appId;
+};
+partitionInfo.prototype.appFutureSeriesId = function(appId) {
+  return appFutureSeriesPrefix + this.id + '_' + appId;
+};
+
+var minute = 1000 * 60;
+var fakeSeriesId = 'atlas_fake_series';
+
+// apps are indexed by application id.
+// the structure maintains the state of the apps across refresh.
+// app's state: new, updated, unchanged (since last refresh)
+// an app has an index to the series array for the chart
+var apps = {};
+
+// dump data (whatever) into json format and create a download link
+// how to use: add "catchServerData = true" in a button click event
+// hanler, e.g. expand/shrink button for racks.  Then at the next
+// data loop, the data will be dumped ONCE.
+var downloadLink = null;
+function dumpData(inData) {
+  var date = new Date();
+  var hours = date.getHours();
+  var minutes = "0" + date.getMinutes();
+  var seconds = "0" + date.getSeconds();
+  var formattedTime = hours + ':' + minutes.substr(-2) + ':' + seconds.substr(-2);
+  var header = formattedTime + ': ' + errorMsgToDump;
+  errorMsgToDump = '';
+  var text = header + '\n' + JSON.stringify(inData, null, 2);
+  var data = new Blob([text], {type: 'text/plain'});
+  var fileName = 'capturedData-' + formattedTime + '.txt';
+
+  if (downloadLink !== null) {
+    // destroy old link and data
+    window.URL.revokeObjectURL(downloadLink.href);
+    downloadLink.parentNode.removeChild(downloadLink);
+  }
+
+  var hrefStr = '<a download="' + fileName + '" id="downloadlink">Download captured data</a>';
+  $(hrefStr).prependTo($('#general_container'));  // parent is on html page
+  downloadLink = document.getElementById('downloadlink');
+  downloadLink.href = window.URL.createObjectURL(data);
+  downloadLink.style.display = 'block';
+}
+
+function atlasPageEntryPoint() {
+  document.title = 'Application Atlas';  // title for browser tab
+
+  var groupByButton = $('<input id="groupByButton" type="checkbox" value="0">');
+  groupByButton.appendTo($('#groupBy'));  // parent is on html page
+  $('#groupByButton').switchButton({
+    width: 35,
+    height: 22,
+    button_width: 26,
+    on_label: 'partition',
+    off_label: 'rack'
+  }).change(function() {
+    displayBy = this.checked ? 'partition' : 'rack';
+    if (chart === null) {  // xxx not the best testing condition
+      return;
+    }
+
+    prevGroupCollection = groupCollection;
+    groupCollection = this.checked ? partitionCollection : rackCollection;
+    groups = this.checked ? partitions : racks;
+
+    for (var g in groupCollection) {
+      groupCollection[g].expanded = allExpanded;
+    }
+
+    updateChart('categoriesChanged');
+  });
+  // button default state is "rack".  But if it's not:
+  if (displayBy === 'partition') {
+    groupByButton.switchButton({checked: true});
+  }
+
+  collapseAllButton = $('<input id="collapseAllButton" type="checkbox" value="0">');
+  collapseAllButton.appendTo($('#collapseAll'));  // parent is on html page
+  $('#collapseAllButton').switchButton({
+    width: 35,
+    height: 22,
+    button_width: 26,
+    on_label: 'all',
+    off_label: 'none'
+  }).change(function() {
+    allExpanded = !this.checked;
+    if (justResetCollapseAllButton) {
+      return;
+    }
+    for (var g in groupCollection) {
+      groupCollection[g].expanded = !this.checked;
+    }
+    updateChart('categoriesChanged');
+  });
+
+  // chart will not shrink because it's in a table cell in yarn.
+  // find the size diff between window and container.  when window
+  // resizes, resize the chart using then window size minus diff.
+  windowChartWidthDiff = window.innerWidth - $('#chart_container').width();
+
+  $(window).resize(function(){
+    if (chart !== null) {
+      chart.setSize(window.innerWidth - windowChartWidthDiff, chartHeight, false);
+    }
+    positionTimeline();
+  });
+
+  getDataLoop();
+  updateNowLine();
+
+  var counter = 0;
+  setInterval(function () {
+    if (doRefresh) {
+      if (counter++ % 10 === 0) {
+        console.log('refresh', counter);  // don't print too many 'refresh'
+      }
+      updateNowLine();
+      if (counter % 2 === 0) {  // "now" line is updated twice as frequently
+        getDataLoop();
+      }
+    } else {
+      // console.log('no refresh');
+    }
+  }, 1000 * 3);
+}
+
+function updateNowLine() {
+  if (!mayStartNowLine) {
+    return;
+  }
+  chart.yAxis[0].removePlotLine('current_time');  // may not exist yet
+  var current = new Date().getTime();
+  chart.yAxis[0].addPlotLine({
+    label: {text: 'now', style: {color: 'blue', fontWeight: 'bold'}},
+    // make current time a little later so that the job color bars
+    // don't cross the now line in UI
+    value: current + 1000,
+    width: 2,
+    color: 'red',
+    zIndex: 50,
+    id: 'current_time'
+  });
+}
+
+// when there is no apps, we need a fake series to show the nodes
+function makeFakeSeries() {
+  var fakeData = [];
+  $.each(groups, function(r, rackId) {
+    var rack = groupCollection[rackId];
+    if (rack.expanded) {
+      for (var n in rack.nodes) {
+        fakeData.push([null, null]);
+      }
+    } else {
+      fakeData.push([null, null]);
+    }
+  });
+  var fakeSeries = {
+    showInLegend:false,
+    enableMouseTracking:false,
+    color: '#ddd',
+    name: fakeSeriesId,
+    id: fakeSeriesId,
+    data: fakeData
+  };
+  return fakeSeries;
+}
+
+function addPlotBandAndLine(plotBands, plotLines, isRackBoundary) {
+  var newBand = {};
+  var newLine = {};
+
+  newBand.from = -0.5;
+  if (plotBands.length > 0) {
+    newBand.from = plotBands[plotBands.length - 1].to;
+  } else {
+    plotLines.push({value: -0.5,
+                    width: 1,
+                    color: 'black',
+                    id: 'line_' + plotLines.length.toString(),
+                    zIndex: 5
+                   });
+  }
+
+  newLine.value = plotLines[plotLines.length - 1].value + 1.0;
+  newLine.width = isRackBoundary ? 2 : 1;
+  newLine.color = 'black';
+  newLine.id = 'line_' + plotLines.length.toString();  // needed for removal
+  newLine.zIndex = 5;
+  plotLines.push(newLine);
+
+  newBand.to = newBand.from + 1.0;
+  newBand.id = 'band_' + plotBands.length.toString();  // needed for removal
+  newBand.color = '#ddd';
+  plotBands.push(newBand);
+}
+
+// make categories, plotBands and plotLines
+function makeCategories() {
+  var categoryIdx = 0;
+  var plotBands = [];  // reset with category changes
+  var plotLines = [];
+  var groupedNodes = [];
+  var allCollapsed = true;
+
+  for (var r = 0; r < groups.length; r++) {
+    var rackId = groups[r];
+    var rack = groupCollection[rackId];
+    var group = {};
+    groupedNodes.push(group);
+    group.name = rackId;
+
+    var n;
+    var isRackBoundary = false;
+    if (rack.expanded) {
+      allCollapsed = false;
+      group.categories = rack.nodes;
+      for (n = 0; n < rack.nodes.length; n++) {
+        nodeCollection[rack.nodes[n]].categoryIdx = categoryIdx++;
+        isRackBoundary = false;
+        if (n + 1 === rack.nodes.length && r + 1 !== groups.length) {
+          isRackBoundary = true;
+        }
+        addPlotBandAndLine(plotBands, plotLines, isRackBoundary);
+        // console.log('category', categoryIdx, rack.nodes[n]);
+      }
+    } else {
+      group.categories = ' ';
+      for (n in rack.nodes) {
+        nodeCollection[rack.nodes[n]].categoryIdx = -1;
+      }
+      rack.categoryIdx = categoryIdx++;
+      if (r + 1 !== groups.length) {
+        isRackBoundary = true;
+      }
+      addPlotBandAndLine(plotBands, plotLines, isRackBoundary);
+      // console.log('category', categoryIdx, rackId);
+    }
+  }
+
+  // The groupedCategory package does something strange so that the
+  // bands are narrower when all groups are collapsed.  Now give more space
+  var factor = (allCollapsed) ? 120 : 30;
+  chartHeight = categoryIdx * factor;
+
+  return {plotBands: plotBands,
+          plotLines: plotLines,
+          groupedCategories: groupedNodes,
+          xMin: 0,
+          xMax: categoryIdx - 1,
+          nCategories: categoryIdx};
+}
+
+function makeTooltip(series) {
+  var tooltip = 'Application: ' + series.name + '<br>';
+  var app = apps[series.name];
+  var nContainers = app.nContainers;
+  var finishTime = app.finishTime;
+  var containerType = 'Running';
+  var now = new Date().getTime();
+  var elapsedTime = (app.appServerState === 'FINISHED') ?
+    intervalToHms(finishTime - app.startTime) :
+    intervalToHms(now - app.startTime);
+  if (series.options.id.startsWith(pendingAllocSeriesPrefix)) {
+    nContainers = app.pendingAllocContainers;
+    finishTime = app.pendingAllocFinishTime;
+    containerType = 'Planned-ahead';
+  }
+
+  if ('jobType' in app) {
+    tooltip += 'Job Type: ' + app.jobType + '<br>';
+  }
+  if ('priority' in app) {
+    tooltip += 'Priority: ' + app.priority + '<br>';
+  }
+  tooltip += 'Number of ' + containerType + ' Containers: ' + nContainers + '<br>';
+  tooltip += 'Start Time: ' + timestampToDate(app.startTime) + '<br>';
+  tooltip += 'Elapsed Time: ' + elapsedTime + '<br>';
+  var duration = intervalToHms(finishTime - app.startTime);
+  tooltip += 'Expected Runtime: ' + duration + '<br>';
+  if ('deadline' in app) {
+    tooltip += 'Deadline: ' + timestampToDate(app.deadline) + '<br>';
+  }
+  return tooltip;
+}
+
+function makeChart() {
+  chartProps = makeCategories();
+
+  Highcharts.setOptions({
+    global : {
+      useUTC : false
+    }
+  });
+
+  for (var appId in apps) {
+    var appSeries = makeSeriesForOneApp(appId);
+    if (appSeries.data.length !== 0) {
+      series.push(appSeries);
+      chartProps.haveData = true;
+    }
+  }
+
+  if (!chartProps.haveData) {
+    series.push(makeFakeSeries());
+  }
+
+  chart = new Highcharts.Chart({
+    chart: {
+      height: chartHeight,
+      renderTo: 'chart_container',  // parent is on html page
+      type: 'columnrange',
+      inverted: true
+    },
+    title: {
+      text: chartTitle
+    },
+
+    xAxis: {
+      min: 0,
+      max: chartProps.nCategories - 1,
+      gridLineWidth: 0,
+      plotBands: chartProps.plotBands,
+      plotLines: chartProps.plotLines,
+      categories: chartProps.groupedCategories,
+      labels: {
+        style: {
+          color: 'red'
+        }
+      }
+    },
+
+    yAxis: {
+      gridLineWidth: 0,
+      type: 'datetime',
+      title: {
+        text: null
+      },
+      labels: {
+        enabled: false
+      },
+    },
+
+    legend: {
+      enabled: false,
+    },
+
+    tooltip: {
+      style: {fontSize: '13pt', lineHeight: '20%'},
+      formatter: function() {
+        return makeTooltip(this.series);
+      }
+    },
+
+    plotOptions: {
+      columnrange: {
+        stacking: 'normal'
+      },
+      series: {
+        pointPadding: 0,
+        groupPadding: 0
+      }
+    },
+
+    series: series
+  });
+
+  recordAppSeriesColor();
+
+  // pending allocations need to use the colors of the matching apps.
+  // so we have to wait ater chart's creation to get the colors
+  var addedPendingAllocations = false;
+  if (displayBy === 'partition') {
+    for (var partitionId in groupCollection) {
+      // var seriesArray = testPendingAllocation(); // for testing
+      var seriesArray = makePendingAllocSeriesForOnePartition(partitionId);
+      for (var s in seriesArray) {
+        chart.addSeries(seriesArray[s], false);
+        chartProps.haveData = true;
+        addedPendingAllocations = true;
+      }
+    }
+    if (addedPendingAllocations) {
+      chart.redraw();
+    }
+  }
+
+  addButtons();
+  addTimelineMaybe();
+}
+
+function elt(id) {
+    return document.getElementById(id);
+}
+
+function positionTimeline() {
+  if (elt('timelinebox') === null || elt('highcharts-0') === null) {
+    return;
+  }
+
+  var $chart = elt('highcharts-0');
+  var $fixed = elt('timelinebox');
+  var chartBottom = $chart.getBoundingClientRect().bottom;
+
+  var HEIGHT = $('#highcharts-0').height();
+  var FIXED_HEIGHT = $('#timelinebox').height();
+
+  // timeline box has no height before it's actualy placed.  so give it one.
+  if (FIXED_HEIGHT === 0) {
+    FIXED_HEIGHT = 90;
+  }
+
+  var marginLeft = chart.plotBox.x;
+  timelineBox.css('left', marginLeft + $('#chart_container').offset().left);
+  if (chartBottom + 30 < window.innerHeight) {
+    $fixed.style.top = chartBottom + 'px';
+  } else {
+    $fixed.style.top = (window.innerHeight - FIXED_HEIGHT - 10) + 'px';
+  }
+
+  // the window can be too 'high' after rack collapse that the user see
+  // a blank window (the interesting part is invisible as the upper portion).
+  // thrink the size of container so that the window shrinks. too.
+  var content = $('#general_container');
+  content.height(chartHeight + 130);
+}
+
+function onload() {
+  positionTimeline();
+}
+
+function addTimelineMaybe() {
+  positionTimeline();
+  if (!chartProps.haveData) {
+    return;
+  }
+
+  var min = chart.yAxis[0].getExtremes().min;
+  var max = chart.yAxis[0].getExtremes().max;
+
+  if (timeline !== null) {
+    timeline.setWindow(min, max);
+    return;
+  }
+
+  timelineBox = $('<div>').appendTo($('#general_container'));
+  timelineBox.attr('id', 'timelinebox');
+  timelineBox.css('background', 'rgba(255, 255, 255, 0.9)');
+  timelineBox.css('font-weight', 'bold');
+
+  var marginLeft = chart.plotBox.x;
+  timelineBox.css('left', marginLeft + $('#chart_container').offset().left);
+  timelineBox.css('right', chart.marginRight);
+  timelineBox.css('position', 'fixed');
+
+  // increase the height of parent div for timeline
+  var content = $('#general_container');
+  var height = content.height() + 100;
+  content.height(height);
+  positionTimeline();  // position the timeline box
+
+  $(window).scroll(function(){
+    positionTimeline();
+  });
+
+  var firstClickOnTimeline = true;
+  timelineBox.on('click', function(e) {
+    // only show help message on the first click
+    if (!firstClickOnTimeline) {
+      return;
+    }
+    firstClickOnTimeline = false;
+
+    var wrapper = $(this).parent();
+    var parentOffset = wrapper.offset();
+    var relX = e.pageX - parentOffset.left + wrapper.scrollLeft();
+    var relY = e.pageY - parentOffset.top + wrapper.scrollTop();
+
+    var reminderBox = $('<div>').attr('id', 'reminder');
+    var reminderText = $('<p>Double click timeline for auto-scaling.</p>');
+    reminderText.appendTo(reminderBox);
+    reminderBox.appendTo($('#general_container'));
+    reminderBox.css({
+      position: 'absolute',
+      'border-style': 'solid',
+      'border-color': 'grey',
+      'border-width': '1px',
+      'background-color': '#F9E79F',
+      left: relX,
+      top: relY
+    });
+    setTimeout(function() {
+      reminderBox.remove();
+    }, 5000);
+  });
+
+  // Configuration for the Timeline
+  var options = {start: min, end: max,
+                 clickToUse: true,
+                 showCurrentTime: false,
+                 margin: {axis: 0}};
+
+  // Create a Timeline
+  timeline = new vis.Timeline(timelineBox[0], null, options);
+  timeline.on('rangechanged', onSelect);
+  timeline.on('doubleClick', onDoubleClick);
+
+  // buttons to select view window
+  var view_window = $('<input />',{
+    type: "radio",
+    id: "timeline_window_all",
+    name: "timeline_window",
+    value : "all"
+  });
+  view_window.prop('checked', true).appendTo(timelineBox).after("all");
+  $('<input />',{
+    type: "radio",
+    id: "timeline_window_week",
+    name: "timeline_window",
+    value : "week"
+  }).appendTo(timelineBox).after("week");
+  $('<input />',{
+    type: "radio",
+    id: "timeline_window_day",
+    name: "timeline_window",
+    value : "day"
+  }).appendTo(timelineBox).after("day");
+  $('<input />',{
+    type: "radio",
+    id: "timeline_window_hour",
+    name: "timeline_window",
+    value : "hour"
+  }).appendTo(timelineBox).after("hour");
+  $('input:radio[name="timeline_window"]').change(function() {
+    var value = $(this).val();
+    console.log('radio button', value);
+  });
+
+  mayStartNowLine = true;
+  /*
+  // add the now line
+  plotLineInterval = setInterval(function () {
+    chart.yAxis[0].removePlotLine('current_time');  // may not exist yet
+    var current = new Date().getTime();
+    chart.yAxis[0].addPlotLine({
+      label: {text: 'now', style: {color: 'blue', fontWeight: 'bold'}},
+      // make current time a little later so that the job color bars
+      // don't cross the now line in UI
+      value: current + 1000,
+      width: 2,
+      color: 'red',
+      zIndex: 50,
+      id: 'current_time'
+    });
+  }, 3000);
+  */
+}
+
+function onSelect(info) {
+  if (!info.byUser) return;
+  chart.yAxis[0].setExtremes(info.start, info.end);
+  // chart.yAxis[0].setExtremes(null, null);  // resume auto setting min/max
+}
+
+function onDoubleClick(info) {
+  chart.yAxis[0].setExtremes(null, null);  // resume auto setting min/max
+}
+
+function addButtons() {
+  var nodeLabelX = 0;  // x for expand button, align with node label
+  var x, y;
+
+  // xxx Since there is no api to find the labels, I use a dirty way.
+  // All labels are children of an element of xaxis-labels class.
+
+  // The first loop is to find the x of a node label.  Needed to
+  // place expand buttons which align with node labels.
+  $('.highcharts-xaxis-labels').children().each(function(i, label) {
+    if (label.textContent in nodeCollection) {  // label is rack
+      nodeLabelX = $(label).offset().left;
+      return false;  // done with loop once a noce label is seen
+    }
+  });
+
+  $('.highcharts-xaxis-labels').children().each(function(i, label) {
+    if (label.textContent in groupCollection) {  // only care about rack label
+      var rackId = label.textContent;
+      var rack = groupCollection[rackId];
+      if (rack.expanded) {
+        var collapseButton = $('<input type="button" value="-" />');
+        rack.button = collapseButton;
+        collapseButton.appendTo($('body'));
+        // position the button below rack name and center it
+        var labelW = $(label)[0].getBoundingClientRect().width;
+        var buttonW = collapseButton[0].getBoundingClientRect().width;
+        x = $(label).offset().left + (labelW - buttonW) / 2;
+        y = $(label).offset().top + 20;
+        collapseButton.css({left: x, top: y, position: 'absolute'});
+        collapseButton.on('click',function() {
+          // catchServerData = true;  // side effect for debugging
+          rack.expanded = false;
+          justResetCollapseAllButton = true;
+          collapseAllButton.switchButton({checked: false});
+          justResetCollapseAllButton = false;
+          updateChart('categoriesChanged');
+        });
+      } else {  // rack is collapsed
+        y = $(label).offset().top;
+        x = nodeLabelX;
+        // when all groups are collapsed, nodeLabelX is zero.
+        // then place the button to the right of rack label
+        if (x === 0) {
+          x = $(label).offset().left + 15;
+        }
+        var expandButton = $('<input type="button" value="+" />');
+        rack.button = expandButton;
+        expandButton.appendTo($('body'));
+        expandButton.css({left: x, top: y, position: 'absolute'});
+        expandButton.on('click',function() {
+          // catchServerData = true;  // side effect for debugging
+          rack.expanded = true;
+          justResetCollapseAllButton = true;
+          collapseAllButton.switchButton({checked: false});
+          justResetCollapseAllButton = false;
+          updateChart('categoriesChanged');
+        });
+      }
+      // buttons on hadoop pages have no border.  add one
+      rack.button.css({"border-color": "black",
+                       "border-radius": "5px",
+                       "border-width":"1px",
+                       "border-style":"solid"});
+
+
+    }
+  });
+}
+
+function makeCollapsedGroupSeries(type, group, data) {
+  var dataSet = [];
+  var b = group.categoryIdx + 0.5;
+  var nNodes = group.nodes.length;
+  for (var i = 0; i < data.length; i++) {
+    var h = b - Number(data[i].value) / Number(nNodes);
+    // console.log('height', h, b, data[i].value);
+
+    if (i > 0) { // not the first interval
+      if (data[i].from === data[i-1].to) {
+        dataSet.pop();  // merge two intervals into one polygon
+      } else {
+        dataSet.push([null, null]);  // add a separator
+        dataSet.push([b, data[i].from]);
+      }
+    } else {
+      dataSet.push([b, data[i].from]);
+    }
+    dataSet.push([h, data[i].from]);
+    dataSet.push([h, data[i].to]);
+    dataSet.push([b, data[i].to]);
+  }
+
+  var groupSeries = {
+    type: 'polygon',
+    showInLegend: false,
+    id: group.seriesId(type),
+    name: group.seriesId(type),
+    // enableMouseTracking: false,
+    shadow: true,
+    color: group.seriesColor(type),
+    data: dataSet
+  };
+
+  return (dataSet.length === 0) ? null: groupSeries;
+}
+
+function makeSeriesForOneRack(rackId) {
+  var rack = groupCollection[rackId];
+  var data = [];
+
+  for (var appId in apps) {
+    var app = apps[appId];
+    for (var n in rack.nodes) {
+      var nodeId = rack.nodes[n];
+      if (nodeId in app.nodesOccupied) {
+        var duration = app.nodesOccupied[nodeId];
+        data = buildRackUsage(data, duration[0], duration[1], 1);
+      }
+    }
+  }
+
+  return makeCollapsedGroupSeries(rack.kind(), rack, data);
+}
+
+function duplicateUsageData(a) {
+  var dup = [];
+  for (var i in a) {
+    var oneElement = Object.assign({}, a[i]);
+    dup.push(oneElement);
+  }
+  return dup;
+}
+
+// For testing purpose
+function shortTime(t) {
+  var s = t.toString();
+  return s.substring(6, 10);
+}
+
+function intervalsOverlap(d1, d2) {
+  return (d1[0] < d2[1] && d2[0] < d1[1]) ? true : false;
+}
+
+function makePartitionAppSeries(type, partition, appId,
+                                prevUsage, currentUsage, t) {
+  var diffs = [];
+  var i = 0;  // track currentUsage
+  var j = 0;  // track prevUsage
+
+  while (i < currentUsage.length) {
+    var current = currentUsage[i];
+    var prev = prevUsage[j];
+    // prev index out of bound, fake one segment
+    if (j >= prevUsage.length) {
+      prev = {from: 0,
+              to: 1,
+              value: 1};
+    }
+
+    var segment;
+    if (current.from < prev.to && prev.from < current.to) {  // overlap
+      if (current.from < prev.from) {  // lead the base range
+        // console.log(shortTime(current.from), '<', shortTime(prev.from));
+        segment = {from: current.from,
+                   to: prev.from,
+                   low: 0,
+                   high: current.value};
+        diffs.push(segment);
+        current.from = prev.from;
+      } else if (current.to > prev.to) {  // trail the base range
+        // console.log(shortTime(current.to), '>', shortTime(prev.to));
+        segment = {from: current.from,
+                   to: prev.to,
+                   low: prev.value,
+                   high: current.value};
+        diffs.push(segment);
+        current.from = prev.to;
+      } else {  // in base range
+        if (current.value !== prev.value) {
+          // console.log('fall in', shortTime(current.from), shortTime(current.to));
+          segment = {from: current.from,
+                     to: current.to,
+                     low: prev.value,
+                     high: current.value};
+          diffs.push(segment);
+        }
+        if (current.to < prev.to) {
+          prev.from = current.to;
+        }
+        i++;
+      }
+      if (current.to >= prev.to) {
+        j++;  // may go out of bound
+      }
+    } else {
+      // console.log('no overlap', shortTime(current.from), shortTime(current.to));
+      segment = {from: current.from,
+                 to: current.to,
+                 low: 0,
+                 high: current.value};
+      diffs.push(segment);
+      i++;
+    }
+  }
+
+  var rgba = convertHex(apps[appId].color, 30);
+  var seriesId = partition.pendingAllocSeriesId(appId);
+  if (type === 'future') {
+    rgba = convertHex(apps[appId].color, 100);
+    seriesId = partition.appFutureSeriesId(appId);
+  }
+
+  var data = diffs;
+  var dataSet = [];
+  var nNodes = Number(partition.nodes.length);
+
+  for (i = 0; i < data.length; i++) {
+    var polygon = data[i];
+    for (j = polygon.low; j < polygon.high; j++) {
+      var idx = nNodes - j - 1;
+      var categoryIdx = nodeCollection[partition.nodes[idx]].categoryIdx;
+      var oneSegment = {x: categoryIdx,
+                        low: polygon.from,
+                        high: polygon.to};  // overlap to fill the gap
+      dataSet.push(oneSegment);
+    }
+  }
+  dataSet.sort(function(a,b) {
+    return (a.x > b.x) ? 1 : ((b.x > a.x) ? -1 : 0);
+  });
+
+  var futureSeries = {
+    type: 'columnrange',
+    id: seriesId,
+    name: appId,
+    animation: false,
+    borderWidth: 0,
+    color: rgba,
+    data: dataSet
+    // diffs: diffs,  // used by testPendingAllocation(), quick and dirty
+  };
+  return (dataSet.length !== 0) ? futureSeries : null;
+}
+
+function convertHex(hex,opacity){
+    hex = hex.replace('#','');
+    var r = parseInt(hex.substring(0,2), 16);
+    var g = parseInt(hex.substring(2,4), 16);
+    var b = parseInt(hex.substring(4,6), 16);
+
+    var result = 'rgba('+r+','+g+','+b+','+opacity/100+')';
+    return result;
+}
+
+function makePendingAllocSeriesForOnePartition(partitionId) {
+  if (displayBy !== 'partition') {
+    return [];
+  }
+
+  var partition = groupCollection[partitionId];
+  var data = [];
+  var seriesArray = [];
+
+  var now = new Date().getTime();
+  var k = 0;
+  var appId, prevData, currentData;
+  for (appId in apps) {
+    var app = apps[appId];
+    if (app.serverState === 'RUNNING' && app.estimatedFinishTime > now) {
+      prevData = duplicateUsageData(data);
+      for (var n in partition.nodes) {
+        var nodeId = partition.nodes[n];
+        if (nodeId in app.nodesOccupied) {
+          data = buildRackUsage(data, now + 6000, app.estimatedFinishTime, 1);
+        }
+      }
+      if (partition.expanded) {
+        currentData = duplicateUsageData(data);
+        var appFutureSeries = makePartitionAppSeries('future', partition,
+                                                     appId, prevData,
+                                                     currentData);
+        if (appFutureSeries !== null) {
+          seriesArray.push(appFutureSeries);
+        }
+      }
+    }
+  }
+
+  for (appId in apps) {
+    // if (++k > 2) { break; }  // control the number of apps
+
+    if (partitionId in apps[appId].partitionsAllocated) {
+      var pAllocation = apps[appId].partitionsAllocated[partitionId];
+      prevData = duplicateUsageData(data);
+      for (var i in pAllocation) {
+        data = buildRackUsage(data, pAllocation[i].from, pAllocation[i].to,
+                              pAllocation[i].value);
+      }
+      if (partition.expanded) {
+        currentData = duplicateUsageData(data);
+        var partitionAppSeries = makePartitionAppSeries('pending', partition,
+                                                        appId, prevData,
+                                                        currentData);
+        if (partitionAppSeries !== null) {
+          seriesArray.push(partitionAppSeries);
+        }
+      }
+    }
+  }
+
+  if (!partition.expanded) {
+    var s = makeCollapsedGroupSeries('future', partition, data);
+    if (s !== null) {
+      seriesArray.push(s);
+    }
+  }
+
+  return seriesArray;
+}
+
+function buildRackUsage(inData, start, finish, value) {
+  var data = inData;
+  var newInterval = null;
+  var interval = null;
+  var i = 0;
+  var startIdx = -1;
+  var endIdx = -1;
+
+  // if not testing data, trim the time to accuracy of a second.
+  // small variations in job start time make too many unnecessary intervals
+  var startTime = (start > 1000000) ? start - start % 1000 : start;
+  var finishTime = (finish > 1000000) ? finish - finish % 1000 : finish;
+  /*
+  var startTime = start;
+  var finishTime = finish;
+  */
+
+  // each rack data point is to/from/value.  to/from is time interval.
+  // value is how many nodes are occupied in the interval.
+  // we will increment the value of the intervals that are
+  // in startTime/finishTime range and insert intervals to fill the gaps.
+
+  // first, search for intervals that will be affected. 
+  // start/endIdx are the indices of the resulting range.
+  for (i = data.length - 1; i >= 0; i--) {
+    interval = data[i];
+    // startTime is just before the resulting startIdx or on the interval
+    if (startTime < interval.from) {
+      startIdx = i;
+      continue;
+    }
+    if(startTime >= interval.from && startTime < interval.to) {
+      startIdx = i;
+      break;
+    }
+    if (startTime >= interval.to) {
+      break;
+    }
+  }
+  for (i = 0; i < data.length; i++) {
+    interval = data[i];
+    // finishTime is just after the resulting endIdx or on the interval
+    if (finishTime > interval.to) {
+      endIdx = i;
+      continue;
+    }
+    if (finishTime > interval.from && finishTime <= interval.to) {
+      endIdx = i;
+      break;
+    }
+    if (finishTime <= interval.from) {
+      break;
+    }
+  }
+  // end condition: startIdx = -1 if new range is at the end.
+  // endIdx = -1 if new range is at the beginning.
+  // both = -1 if data is empty.
+  // console.log('range affected', startTime, finishTime, startIdx, endIdx);
+
+  if (startIdx === -1 || endIdx === -1) {
+    newInterval = {from: startTime,
+                   to: finishTime,
+                   value: value};
+    data.splice(((endIdx !== -1) ? endIdx + 1 : 0), 0, newInterval);
+    // console.log('simple insert');
+    return data;
+  }
+
+  // when start/finish time is in an interval, split
+  interval = data[startIdx];
+  var tmp = Object.assign({}, interval);
+  if (startTime > interval.from) {
+    // split interval into two.  First part is not in start/finish range
+    newInterval = {from: startTime,
+                   to: interval.to,
+                   value: interval.value};
+    data.splice(++startIdx, 0, newInterval);
+    endIdx++;  // shift end index as well
+    interval.to = startTime;
+    // console.log('split start piece', tmp, interval, newInterval);
+  }
+
+  interval = data[endIdx];
+  tmp = Object.assign({}, interval);
+  if (finishTime < interval.to) {
+    newInterval = {from: finishTime,
+                   to: interval.to,
+                   value: interval.value};
+    data.splice(endIdx + 1, 0, newInterval);
+    interval.to = finishTime;
+    // console.log('split end piece at endIdx', tmp, data[endIdx], data[endIdx+1]);
+  }
+
+  // slice data into three parts: before, range, after
+  var before = data.slice(0, startIdx);  // may result empty array
+  var range = data.slice(startIdx, endIdx + 1);  // may be empty
+  var after = data.slice(endIdx + 1, data.length);  // may be empty
+
+  // add 1 to exiting intervals and fill the gap between and on either end
+  // of the range.  loop backward to avoid index shifting
+  for (i = range.length - 1; i >= 0; i--) {
+    // console.log('before increment', i, range[i]);
+    range[i].value += value;
+
+    if (i === range.length - 1 && finishTime > range[i].to) {
+      newInterval = {from: range[i].to,
+                     to: finishTime,
+                     value: value};
+      range.push(newInterval);  // add at the end
+      // console.log('push', i, newInterval);
+    }
+    if (i > 0 && range[i - 1].to < range[i].from) {  // fill gap in between
+      newInterval = {from: range[i - 1].to,
+                     to: range[i].from,
+                     value: value};
+      range.splice(i, 0, newInterval);
+      // console.log('fill gap', i, newInterval);
+    }
+    if (i === 0 && startTime < range[i].from) {
+      newInterval = {from: startTime,
+                     to: range[i].from,
+                     value: value};
+      range.unshift(newInterval);  // insert at the beginning
+      // console.log('unshift', i, newInterval);
+    }
+  }
+  if (range.length === 0) {  // start/finish range falls in a gap
+    newInterval = {from: startTime,
+                   to: finishTime,
+                   value: value};
+    range.push(newInterval);
+    // console.log('only one', newInterval);
+  }
+
+  // merge two touching intervals with same value.  This can happen
+  // ONLY at either end of the range
+  if (before.length !== 0 &&
+      before[before.length - 1].to === range[0].from &&
+      before[before.length - 1].value === range[0].value) {
+    // console.log('merge first', before[before.length - 1], range[0]);
+    range[0].from = before[before.length - 1].from;
+    before.pop();
+  }
+  if (after.length !== 0 &&
+      after[0].from === range[range.length - 1].to &&
+      after[0].value === range[range.length - 1].value) {
+    // console.log('merge last', range[range.length - 1], after[0]);
+    after[0].from = range[range.length - 1].from;
+    range.pop();
+  }
+
+  data = before.concat(range, after);
+  return data;
+}  // buildRackUsage()
+
+// Nodes from the server carry rack and partition it belongs to.  So
+// the groupCollection structure is also made here.
+function processNodes(inNodes) {
+  // local partition varibles for ever changing partitions
+  // var partitionMap = {};
+  var partitionC = {};
+  var localPartitions = [];
+
+  if (nodesProcessed && !havePartitions) {
+    return;  // don't need re-process racks because they don't change
+  }
+
+  $.each(inNodes, function(index, inNode) {
+    var nodeId = inNode.nodeId.split('.')[0];
+    var rackId = inNode.rack.substr(1);
+    var partitionId = inNode.partition;  // may be undefined, may need processing
+    havePartitions = (partitionId === undefined) ? false : true;
+
+    if (!nodesProcessed) { // create nodeCollection and rackCollection only once
+      var node = {};
+      node.fullId = inNode.nodeId;
+      node.categoryIdx = -1;  // node's chart category index, -1 -> rack collapsed
+      node.data = [];  // [start, finish] pairs chronologically ordered
+      node.state = 'unchanged';  // will be updated with app data
+      nodeCollection[nodeId] = node;
+
+      // rackInfo is derived from node. a previous node may have built the rack
+      if (rackId in rackCollection) {
+        rackCollection[rackId].nodes.push(nodeId);  // add node into rackInfo
+      } else {
+        var rack = new rackInfo(rackId);
+        rackCollection[rackId] = rack;
+
+        rack.fullId = inNode.rack;
+        rack.nodes = [nodeId];
+        rack.button = null;
+        rack.categoryIdx = -1;
+        rack.expanded = true;
+      }
+    }
+    if (partitionId === undefined) {
+      return true;  // proces next node
+    }
+
+    if (partitionId in partitionC) {  // use local collection
+        partitionC[partitionId].nodes.push(nodeId);  // add node into pInfo
+    } else {
+      var partition = new partitionInfo(partitionId);
+      partitionC[partitionId] = partition;
+
+      partition.fullId = inNode.partition;
+      partition.nodes = [nodeId];
+      partition.button = null;
+      partition.categoryIdx = -1;
+      partition.expanded = true;
+    }
+  });
+
+  // add fake p0 with all nodes, in case there is no partition
+  if (Object.keys(partitionC).length === 0) {
+    var partition = new partitionInfo('p0');
+    partitionC.p0 = partition;
+    partition.fullId = 'p0';
+    partition.nodes = [];
+    partition.button = null;
+    partition.categoryIdx = -1;
+    partition.expanded = true;
+
+    for (var nodeId in nodeCollection) {
+      partition.nodes.push(nodeId);
+    }
+  }
+
+  // racks and the nodes on each rack are sorted alphabetically
+  racks = Object.keys(rackCollection).sort();
+  for (var r in racks) {
+    rackCollection[racks[r]].nodes.sort();
+  }
+
+  categoriesChanged = false;
+
+  // compare old and new parttioning.  According to partition change rules
+  // partitions can only split into finer partitioning.  So we only need to
+  // compare the size of the two partitions.
+  localPartitions = Object.keys(partitionC).sort();
+  if (!nodesProcessed ||
+      (havePartitions && localPartitions.length !== partitions.length)) {
+    for (var p in localPartitions) {
+      partitionC[localPartitions[p]].nodes.sort();
+    }
+    prevPartitionCollection = partitionCollection;  // keep last partitioning
+    // currently "display by partition" AND partition has changed:
+    // save the current partitioning.  non-null prevGroupC will trigger
+    // category change in updateChart.
+    if (displayBy === 'partition') {
+      prevGroupCollection = partitionCollection;  // keep last partitioning
+    }
+
+    partitionCollection = partitionC;
+    partitions = localPartitions;
+  }
+
+  if (displayBy === 'rack') {
+    groupCollection = rackCollection;
+    groups = racks;
+  } else {
+    groupCollection = partitionCollection;
+    groups = partitions;
+  }
+
+  nodesProcessed = true;
+}
+
+function destroyChartEtc() {
+  if (plotLineInterval !== null) {
+    window.clearInterval(plotLineInterval);
+    plotLineInterval = null;
+  }
+  series = [];
+  chart.destroy();
+  chart = null;
+  if (timeline !== null) {
+    timeline.destroy();
+    timeline = null;
+  }
+  if (timelineBox !== null) {
+    timelineBox.remove();
+  }
+}
+
+function makeSeriesForOneApp(appId) {
+  var dataSet = [];
+
+  $.each(apps[appId].nodesOccupied, function(n, duration) {
+    if (nodeCollection[n].categoryIdx !== -1) {  // node is in collapsed group
+      dataSet.push({x: nodeCollection[n].categoryIdx,
+                    low: duration[0],
+                    high: duration[1]});
+    }
+  });
+  $.each(apps[appId].nodeUseHistory, function(n, history) {
+    if (nodeCollection[n].categoryIdx !== -1) {
+      for (var i in history) {
+        dataSet.push({x: nodeCollection[n].categoryIdx,
+                      low: history[i][0],
+                      high: history[i][1]});
+      }
+    }
+  });
+  // sort data on time axis to please highchart
+  dataSet.sort(function(a,b) {
+    return (a.x > b.x) ? 1 : ((b.x > a.x) ? -1 : 0);
+  });
+
+  var appSeries = {
+    type: 'columnrange',
+    id: apps[appId].seriesId,
+    name: appId,
+    data: dataSet
+  };
+
+  // no category touched by app. it can happen with rack collapse
+  return appSeries;  // data can be emtpy, like []
+}
+
+var dumpedServerDataOnceInUpdateAppState = false;
+function updateAppState(inApp, nodesOccupied, pendingAllocations, finished) {
+  var id = inApp.applicationId;
+  // app has already finished when first seen.  ignore.
+  if (!(id in apps) && finished) return;
+
+  if (id in apps && finished) {
+    apps[id].state = 'finished';
+    apps[id].serverState = 'FINISHED';
+    return;
+  }
+
+  if (!(id in apps)) {  // make new app entry
+    apps[id] = {};
+    apps[id].state = 'new';
+    apps[id].nodesOccupied = {};
+    apps[id].nodeUseHistory = {};  // preexempted nodes history
+    apps[id].seriesId = 'Atlas_app_' + id;
+    apps[id].color = null;
+  } else {
+    apps[id].state = 'unchanged';
+  }
+  apps[id].partitionsAllocated = {};
+
+  apps[id].startTime = inApp.startTime;
+  apps[id].finishTime = (inApp.finishTime === 0) ?
+    new Date().getTime() : inApp.finishTime;
+  apps[id].serverState = inApp.state;
+  apps[id].nContainers = Object.keys(nodesOccupied).length;
+  apps[id].estimatedFinishTime = inApp.finishTime;
+  apps[id].pendingAllocFinishTime = 0;
+  apps[id].pendingAllocContainers = 0;
+
+  // If tooltip info exists
+  if ('tooltip_info' in inApp) {
+    for (var k in inApp.tooltip_info) {
+      apps[id][k] = inApp.tooltip_info[k];
+    }
+  }
+
+  // xxx need rework the state keeping now app's container set can add
+  // AND subtract
+  apps[id].state = 'updated';
+
+  var newList = {};
+  $.each(nodesOccupied, function(n, duration) {
+    newList[n] = [duration[0], duration[1]];
+    if (n in apps[id].nodesOccupied) {
+      // there is a record that the node has been used by the app.
+      // if the duration on record is pretty much the same duration,
+      // (with some extension in the new duration), delete the old
+      // record.  Otherwise it's the case where the app was preempted
+      // and now restarted.  Then don't delete so the duration can go
+      // nodeUseHistory
+      if (intervalsOverlap(duration, apps[id].nodesOccupied[n])) {
+        delete apps[id].nodesOccupied[n];
+      }
+    }
+  });
+
+  // leftover in app's nodesOccupied go to node use history
+  for (var n in apps[id].nodesOccupied) {
+    var duration = apps[id].nodesOccupied[n];
+    if (n in apps[id].nodeUseHistory) {
+      apps[id].nodeUseHistory[n].push([duration[0], duration[1]]);
+    } else {
+      apps[id].nodeUseHistory[n] = [[duration[0], duration[1]]];
+    }
+  }
+  apps[id].nodesOccupied = newList;
+
+  // partition allcated for each app: a skyline structure like rack usage data
+  $.each(pendingAllocations, function(a, allocation) {
+    for (var p in allocation.partitions) {
+      var allocationForP = [];
+      if (p in apps[id].partitionsAllocated) {  // already recorded
+        allocationForP = apps[id].partitionsAllocated[p];
+      }
+      // dump server data when pending allocation is not in the future
+      var now = new Date().getTime();
+      if (allocation.startTime + 5000 < now &&  // 5 seconds grace period
+          !dumpedServerDataOnceInUpdateAppState && !useCapturedData) {
+        dumpedServerDataOnceInUpdateAppState = true;
+        catchServerData = true;
+        errorMsgToDump = 'invalid pending allocation ' + id;
+      }
+      allocationForP = buildRackUsage(allocationForP,
+                                      allocation.startTime,
+                                      allocation.finishTime,
+                                      allocation.partitions[p]);
+      apps[id].partitionsAllocated[p] = allocationForP;
+      if (allocation.finishTime > apps[id].pendingAllocFinishTime) {
+        apps[id].pendingAllocFinishTime = allocation.finishTime;
+      }
+      apps[id].pendingAllocContainers += allocation.partitions[p];
+    }
+  });
+}
+
+function processApps(inApps) {
+  // pending allocations for an app can linger if the app doesn't show
+  // up anymore in server data.  The server should be responsible for
+  // serving app data whose pending allocations that eventually dissolve as
+  // the app goes through the pipeline.  However, suppose the UI gets
+  // disconnected with the server, then it may not get the app's data at all
+  // stages to clean up pending allocations.
+  for (var appId in apps) {
+    apps[appId].partitionsAllocated = {};
+  }
+
+  $.each(inApps, function(index, inApp) {
+    var finishedApp = false;
+    var nodesOccupied = {};  // node -> [startTime, finishTime]
+    var pendingAllocations = [];
+    var finishTime = 0;
+
+    // loop through the nodes used by the app
+    for (var ranNodeIdx in inApp.ranNodes) {
+      var startTime = Number(inApp.startTime);
+      var nodeId = inApp.ranNodes[ranNodeIdx].split('.')[0];
+
+      if (inApp.state === 'FINISHED') {
+        // App is finished. We only know the app's creation time
+        // on each node if the client gets the app info when it's running.
+        // So if an app has already finished when the client is started,
+        // we simply don't show the app because the start time on individual
+        // nodes is not provided for finished apps by the server.
+        if (!(inApp.applicationId in apps)) {
+          return true;
+        }
+
+        finishTime = Number(inApp.finishTime);
+        if (finishTime === 0) {
+          finishTime = new Date().getTime();
+        }
+        finishedApp = true;
+      } else if (inApp.state === 'RUNNING') {
+        var container = inApp.containers[ranNodeIdx];
+        startTime = inApp.containers[ranNodeIdx].creationTime;
+        finishTime = new Date().getTime();
+      } else {
+        console.log('invalid app state:', inApp.applicationId. inApp.state);
+        return true;
+      }
+
+      nodesOccupied[nodeId] = [startTime, finishTime];
+    }
+
+    if (useCapturedData) {
+      addPendingAllocations(inApp);  // no op if not using captured data
+    }
+
+    if ('pending_future_allocations' in inApp) {
+      pendingAllocations = inApp.pending_future_allocations;
+    }
+
+    // update app state and save the current dataset for the app
+    updateAppState(inApp, nodesOccupied, pendingAllocations, finishedApp);
+  });
+}
+
+function getDataLoop() {
+  // capturedData and related variables are in a separate script
+  if (typeof useCapturedData === 'undefined') {
+    useCapturedData = false;
+  }
+  if (useCapturedData) {
+    var nodes = getNodesFromCapturedData();
+    var apps;
+    if (doRefresh) {
+      if (nRefresh === 0) {
+        apps = [];
+      } else {
+        apps = getAppsFromCapturedData().slice(0, nRefresh);
+      }
+      getDataOneIteration({nodes: nodes, apps: apps});
+      nRefresh++;
+      if (nRefresh % 10 === 0) {
+        addOneNode(0);  // add a node into app 0
+      }
+      if (nRefresh === 5) {
+        finishOneApp(2);  // finish the app but will start later
+      }
+      if (nRefresh === 7) {
+        restartOneApp(2);  // restart preempted job
+      }
+      if (nRefresh === 10) {
+        finishOneApp(2);  // finish the app but will start later
+      }
+      if (nRefresh === 14) {
+        restartOneApp(2);  // restart preempted job
+      }
+      // maxAppFinishTime is defined in capturedData.js
+      if (maxAppFinishTime !== 0 && new Date().getTime() > maxAppFinishTime) {
+        doRefresh = false;
+      }
+    } else {
+      nodes = getNodesFromCapturedData();
+      apps = getAppsFromCapturedData().slice(0, 6);
+      // getDataOneIteration({nodes: nodes, apps: []});  // no apps
+      getDataOneIteration({nodes: nodes, apps: apps});
+    }
+    return;
+  }
+
+  var dataLink = '/cluster/atlasData/';
+  d3.json(dataLink, function(error, data) {
+    var inApps = [];
+    var inNodes = [];
+
+    if (error !== null) {
+      console.log('failed server request.  will retry', error.statusText);
+      return;
+    }
+
+    getDataOneIteration(data);
+  });
+}
+
+function getDataOneIteration(data) {
+  if (catchServerData) {
+    catchServerData = false;
+    dumpData(data);
+  }
+  $.each(data, function(key, list) {
+    if (key === 'nodes') {
+      inNodes = data.nodes;
+    } else if (key === 'apps') {
+      inApps = data.apps;
+    }
+  });
+
+  processNodes(inNodes);
+  processApps(inApps);
+
+  // update chart if already exists
+  if (chart !== null) {
+    updateChart(categoriesChanged);
+  } else {
+    makeChart();
+  }
+}
+
+function recordAppSeriesColor() {
+  // all app has a seris even if it's all [null, null], to get its color
+  // allocated by highchart. the color is used for the pending partition
+  // series
+  for (var s in chart.series) {
+    var appId = chart.series[s].name;
+    if (chart.series[s].options.id.startsWith(appSeriesPrefix)) {
+      apps[appId].color = chart.series[s].color;
+    }
+  }
+}
+
+function updateChart(categoriesChanged) {
+  var needRedraw = false;
+  var layoutChanged = false;
+
+  var rack, rackId;
+  if (categoriesChanged !== undefined || prevGroupCollection !== null) {
+    var bandIds = [];
+    var lineIds = [];
+    var b, l;
+
+    newProps = makeCategories();
+    layoutChanged = true;
+    needRedraw = true;
+
+    chart.setSize($('#chart_container').width(), chartHeight, false);
+
+    // must copy the band/line ids before removing.  highchart just
+    // uses MY bands and lines.  So if I loop through the bands, I'm
+    // doing removal on the dame data structure.
+    for (b in chartProps.plotBands) {
+      bandIds.push(chartProps.plotBands[b].id);
+    }
+    for (b in bandIds) {
+      chart.xAxis[0].removePlotBand(bandIds[b]);
+    }
+    for (b in newProps.plotBands) {
+      chart.xAxis[0].addPlotBand(newProps.plotBands[b]);
+    }
+    for (l in chartProps.plotLines) {
+      lineIds.push(chartProps.plotLines[l].id);
+    }
+    for (l in lineIds) {
+      chart.xAxis[0].removePlotLine(lineIds[l]);
+    }
+    for (l in newProps.plotLines) {
+      chart.xAxis[0].addPlotLine(newProps.plotLines[l]);
+    }
+
+    // get "older" group collection which is set
+    // in two cases: rack/partition switch and partition change
+    var oldCollection = groupCollection;
+    if (prevGroupCollection !== null) {
+      oldCollection = prevGroupCollection;
+    }
+    for (rackId in oldCollection) {  // can be rack or partition
+      rack = oldCollection[rackId];
+      if (chart.get(rack.seriesId()) !== null) {
+        chart.get(rack.seriesId()).remove(false);
+      }
+      if (chart.get(rack.seriesId('future')) !== null) {
+        chart.get(rack.seriesId('future')).remove(false);
+      }
+
+      rack.button.remove();  // remove the old buttons
+      rack.button = null;
+    }
+
+    prevGroupCollection = null;
+
+    chart.xAxis[0].setCategories(newProps.groupedCategories, false);
+    chart.xAxis[0].setExtremes(newProps.xMin, newProps.xMax);
+    newProps.haveData = chartProps.haveData;  // app data accumulate
+    chartProps = newProps;
+  }
+
+  // add rack series.
+  // If categories changed, code above should have removed old ones already.
+  for (rackId in groupCollection) {
+    rack = groupCollection[rackId];
+    if (rack.expanded) {
+      continue;
+    }
+
+    var rackSeries = makeSeriesForOneRack(rackId);
+    if (rackSeries === null) {  // rack data unchanged since last update
+      continue;
+    }
+
+    needRedraw = true;
+    if (rackSeries.data.length !== 0) {
+      chartProps.haveData = true;
+    }
+    if (chart.get(rack.seriesId()) === null) {
+      chart.addSeries(rackSeries, false);
+    } else {
+      chart.get(rack.seriesId()).setData(rackSeries.data, false);
+    }
+  }
+
+  // collect pending_allocation and app future series ids and remove.
+  // two steps for data integrity.
+  var seriesIds = [];
+  var s;
+  for (s in chart.series) {
+    if (chart.series[s].options.id.startsWith(pendingAllocSeriesPrefix) ||
+        chart.series[s].options.id.startsWith(appFutureSeriesPrefix)) {
+      seriesIds.push(chart.series[s].options.id);
+    }
+  }
+  for (var i in seriesIds) {
+    chart.get(seriesIds[i]).remove(false);
+  }
+
+  // renew apps for uncollapsed nodes
+  for (var appId in apps) {
+    var app = apps[appId];
+    var seriesId = apps[appId].seriesId;
+    if (app.state == 'new' || app.state == 'updated' || layoutChanged) {
+      needRedraw = true;
+      var appSeries = makeSeriesForOneApp(appId);
+      if (appSeries.data.length !== 0) {
+        chartProps.haveData = true;
+      }
+      if (chart.get(seriesId) === null) {
+        chart.addSeries(appSeries, false);
+      } else {
+        chart.get(seriesId).setData(appSeries.data, false);
+      }
+    }
+  }
+
+  // leave fake series there but update it to fit the new categrories
+  if (chart.get(fakeSeriesId) !== null && layoutChanged){
+    chart.get(fakeSeriesId).setData(makeFakeSeries(), false);
+  }
+
+  if (needRedraw) {
+    chart.redraw();
+  }
+  if (layoutChanged) {
+    addButtons();
+  }
+
+  recordAppSeriesColor();
+
+  // pending allocations need to use the colors of the matching apps.
+  // so we have to wait ater the app's series (even when it's empty)
+  // has been created.
+  var addedPendingAllocations = false;
+  if (displayBy === 'partition') {
+    for (var partitionId in groupCollection) {
+      // var seriesArray = testPendingAllocation(); // for testing
+      var seriesArray = makePendingAllocSeriesForOnePartition(partitionId);
+      for (s in seriesArray) {
+        chart.addSeries(seriesArray[s], false);
+        chartProps.haveData = true;
+        addedPendingAllocations = true;
+      }
+    }
+    if (addedPendingAllocations) {
+      chart.redraw();
+    }
+  }
+
+  // this should be done after the allocation partitions is put in
+  addTimelineMaybe();
+
+  // console.log(chart.series);
+}
+
+// =================================================================== //
+
+// Helper funtions to be moved to a less changed file
+
+function intervalToHms(d) {
+  d = Number(d / 1000);
+  var h = Math.floor(d / 3600);
+  var m = Math.floor(d % 3600 / 60);
+  var s = Math.floor(d % 3600 % 60);
+  return ((h > 0 ? h + ":" + (m < 10 ? "0" : "") : "") + m + ":" + (s < 10 ? "0" : "") + s);
+}
+
+function timestampToDate(d) {
+  var a = new Date(d);
+  var year = a.getFullYear();
+  var month = a.getMonth() + 1;
+  var date = a.getDate();
+  var ymd = year + '-' + (month < 10 ? '0' : '') + month + '-' +
+    (date < 10 ? '0' : '') + date;
+  var h = a.getHours();
+  var m = a.getMinutes();
+  var s = a.getSeconds();
+  var hms = intervalToHms((((h * 60) + m) * 60 + s) * 1000);
+  var time = ymd + ' ' + hms;
+  return time;
+}
