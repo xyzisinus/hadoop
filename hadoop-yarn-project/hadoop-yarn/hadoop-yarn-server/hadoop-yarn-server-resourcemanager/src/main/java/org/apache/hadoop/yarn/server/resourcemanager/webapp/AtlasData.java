@@ -136,16 +136,16 @@ public class AtlasData extends TextView {
       nodesAndApps.add("nodes", nodes);
       nodesAndApps.add("apps", applications);
 
-      puts(serial.toJson(nodesAndApps));
+      putWithoutEscapeHtml(serial.toJson(nodesAndApps));
 
-      // dump.write("final redering: " + serial.toJson(nodesAndApps) + "\n");
+      dump.write("final redering: " + serial.toJson(nodesAndApps) + "\n");
       dump.write("The end\n");
       dump.close();
       return;
 
     } catch (IOException e) {
       LOG.error("[TETRIS] Failed to write to dump file");
-      puts(NODATA);
+      putWithoutEscapeHtml(NODATA);
       return;
     }
   }
