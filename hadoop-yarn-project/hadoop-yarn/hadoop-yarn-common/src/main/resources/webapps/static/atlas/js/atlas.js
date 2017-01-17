@@ -27,6 +27,9 @@ var errorMsgToDump = '';
 var counter = 0;
 var mayStartNowLine = false;
 
+var currentTimeUsed = false;
+var timeInCurrentLoop = null;
+
 var chartProps = {}; // plotBands/Lines, groupedCategories, nCategories, etc
 var chart = null;
 var timelineBox = null;
@@ -40,7 +43,7 @@ var chartHeight = 0;
 var windowChartWidthDiff = 0;
 
 var havePartitions = false;
-var displayBy = 'partition';  // or partition.  can be preset as default
+var displayBy = 'rack';  // or partition.  can be preset as default
 var nodeCollection = {};  // node id -> app usage, state, categoriesIdx, etc
 var prevGroupCollection = null;
 var groupCollection = null;
@@ -198,7 +201,6 @@ function atlasPageEntryPoint() {
   });
 
   getDataLoop();
-  updateNowLine();
 
   var counter = 0;
   setInterval(function () {
@@ -206,7 +208,6 @@ function atlasPageEntryPoint() {
       if (counter++ % 10 === 0) {
         console.log('refresh', counter);  // don't print too many 'refresh'
       }
-      updateNowLine();
       if (counter % 2 === 0) {  // "now" line is updated twice as frequently
         getDataLoop();
       }
@@ -221,12 +222,10 @@ function updateNowLine() {
     return;
   }
   chart.yAxis[0].removePlotLine('current_time');  // may not exist yet
-  var current = new Date().getTime();
+  var current = (currentTimeUsed)? timeInCurrentLoop: new Date().getTime();
   chart.yAxis[0].addPlotLine({
     label: {text: 'now', style: {color: 'blue', fontWeight: 'bold'}},
-    // make current time a little later so that the job color bars
-    // don't cross the now line in UI
-    value: current + 1000,
+    value: current,
     width: 2,
     color: 'red',
     zIndex: 50,
@@ -629,23 +628,7 @@ function addTimelineMaybe() {
   });
 
   mayStartNowLine = true;
-  /*
-  // add the now line
-  plotLineInterval = setInterval(function () {
-    chart.yAxis[0].removePlotLine('current_time');  // may not exist yet
-    var current = new Date().getTime();
-    chart.yAxis[0].addPlotLine({
-      label: {text: 'now', style: {color: 'blue', fontWeight: 'bold'}},
-      // make current time a little later so that the job color bars
-      // don't cross the now line in UI
-      value: current + 1000,
-      width: 2,
-      color: 'red',
-      zIndex: 50,
-      id: 'current_time'
-    });
-  }, 3000);
-  */
+  updateNowLine();
 }
 
 function onSelect(info) {
@@ -1325,7 +1308,7 @@ function updateAppState(inApp, nodesOccupied, pendingAllocations, finished) {
 
   apps[id].startTime = inApp.startTime;
   apps[id].finishTime = (inApp.finishTime === 0) ?
-    new Date().getTime() : inApp.finishTime;
+    timeInCurrentLoop : inApp.finishTime;
   apps[id].serverState = inApp.state;
   apps[id].nContainers = Object.keys(nodesOccupied).length;
   apps[id].estimatedFinishTime = inApp.finishTime;
@@ -1378,7 +1361,7 @@ function updateAppState(inApp, nodesOccupied, pendingAllocations, finished) {
         allocationForP = apps[id].partitionsAllocated[p];
       }
       // dump server data when pending allocation is not in the future
-      var now = new Date().getTime();
+      var now = timeInCurrentLoop;
       if (allocation.startTime + 5000 < now &&  // 5 seconds grace period
           !dumpedServerDataOnceInUpdateAppState && !useCapturedData) {
         dumpedServerDataOnceInUpdateAppState = true;
@@ -1432,13 +1415,17 @@ function processApps(inApps) {
 
         finishTime = Number(inApp.finishTime);
         if (finishTime === 0) {
-          finishTime = new Date().getTime();
+          finishTime = timeInCurrentLoop;
+          currentTimeUsed = true;
+          console.log('finished current time', timeInCurrentLoop);
         }
         finishedApp = true;
       } else if (inApp.state === 'RUNNING') {
         var container = inApp.containers[ranNodeIdx];
         startTime = inApp.containers[ranNodeIdx].creationTime;
-        finishTime = new Date().getTime();
+        finishTime = timeInCurrentLoop;
+        console.log('running current time', timeInCurrentLoop);
+        currentTimeUsed = true;
       } else {
         console.log('invalid app state:', inApp.applicationId. inApp.state);
         return true;
@@ -1519,6 +1506,12 @@ function getDataLoop() {
 }
 
 function getDataOneIteration(data) {
+  // If the app doesn't have the finish time, the finish time is the uniform
+  // current time of the data fetching loop.  This current time is also used
+  // to draw the "now" line.
+  timeInCurrentLoop = new Date().getTime();
+  currentTimeUsed = false;
+
   if (catchServerData) {
     catchServerData = false;
     dumpData(data);
@@ -1683,6 +1676,7 @@ function updateChart(categoriesChanged) {
   if (needRedraw) {
     chart.redraw();
   }
+  updateNowLine();
   if (layoutChanged) {
     addButtons();
   }
