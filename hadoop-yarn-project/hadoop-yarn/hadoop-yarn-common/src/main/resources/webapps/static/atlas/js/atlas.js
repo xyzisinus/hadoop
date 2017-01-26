@@ -37,12 +37,10 @@ var timeline = null;
 var plotLineInterval = null;
 var series = [];
 var nodesProcessed = false;
-var usePartition = false;
 var chartTitle = null;
 var chartHeight = 0;
 var windowChartWidthDiff = 0;
 
-var havePartitions = false;
 var nodeCollection = {};  // node id -> app usage, state, categoriesIdx, etc
 var prevGroupCollection = null;
 var groupCollection = null;
@@ -138,30 +136,6 @@ function dumpData(inData) {
 
 function atlasPageEntryPoint() {
   document.title = 'Application Atlas';  // title for browser tab
-
-  var groupByButton = $('<input id="groupByButton" type="checkbox" value="0">');
-  groupByButton.appendTo($('#groupBy'));  // parent is on html page
-  $('#groupByButton').switchButton({
-    width: 35,
-    height: 22,
-    button_width: 26,
-    on_label: 'partition',
-    off_label: 'rack'
-  }).change(function() {
-    if (chart === null) {  // xxx not the best testing condition
-      return;
-    }
-
-    prevGroupCollection = groupCollection;
-    groupCollection = this.checked ? partitionCollection : rackCollection;
-    groups = this.checked ? partitions : racks;
-
-    for (var g in groupCollection) {
-      groupCollection[g].expanded = allExpanded;
-    }
-
-    updateChart('categoriesChanged');
-  });
 
   collapseAllButton = $('<input id="collapseAllButton" type="checkbox" value="0">');
   collapseAllButton.appendTo($('#collapseAll'));  // parent is on html page
@@ -760,107 +734,6 @@ function intervalsOverlap(d1, d2) {
   return (d1[0] < d2[1] && d2[0] < d1[1]) ? true : false;
 }
 
-function makePartitionAppSeries(type, partition, appId,
-                                prevUsage, currentUsage, t) {
-  var diffs = [];
-  var i = 0;  // track currentUsage
-  var j = 0;  // track prevUsage
-
-  while (i < currentUsage.length) {
-    var current = currentUsage[i];
-    var prev = prevUsage[j];
-    // prev index out of bound, fake one segment
-    if (j >= prevUsage.length) {
-      prev = {from: 0,
-              to: 1,
-              value: 1};
-    }
-
-    var segment;
-    if (current.from < prev.to && prev.from < current.to) {  // overlap
-      if (current.from < prev.from) {  // lead the base range
-        // console.log(shortTime(current.from), '<', shortTime(prev.from));
-        segment = {from: current.from,
-                   to: prev.from,
-                   low: 0,
-                   high: current.value};
-        diffs.push(segment);
-        current.from = prev.from;
-      } else if (current.to > prev.to) {  // trail the base range
-        // console.log(shortTime(current.to), '>', shortTime(prev.to));
-        segment = {from: current.from,
-                   to: prev.to,
-                   low: prev.value,
-                   high: current.value};
-        diffs.push(segment);
-        current.from = prev.to;
-      } else {  // in base range
-        if (current.value !== prev.value) {
-          // console.log('fall in', shortTime(current.from), shortTime(current.to));
-          segment = {from: current.from,
-                     to: current.to,
-                     low: prev.value,
-                     high: current.value};
-          diffs.push(segment);
-        }
-        if (current.to < prev.to) {
-          prev.from = current.to;
-        }
-        i++;
-      }
-      if (current.to >= prev.to) {
-        j++;  // may go out of bound
-      }
-    } else {
-      // console.log('no overlap', shortTime(current.from), shortTime(current.to));
-      segment = {from: current.from,
-                 to: current.to,
-                 low: 0,
-                 high: current.value};
-      diffs.push(segment);
-      i++;
-    }
-  }
-
-  var rgba = convertHex(apps[appId].color, 30);
-  var seriesId = partition.pendingAllocSeriesId(appId);
-  if (type === 'future') {
-    rgba = convertHex(apps[appId].color, 100);
-    seriesId = partition.appFutureSeriesId(appId);
-  }
-
-  var data = diffs;
-  var dataSet = [];
-  var nNodes = Number(partition.nodes.length);
-
-  for (i = 0; i < data.length; i++) {
-    var polygon = data[i];
-    for (j = polygon.low; j < polygon.high; j++) {
-      var idx = nNodes - j - 1;
-      var categoryIdx = nodeCollection[partition.nodes[idx]].categoryIdx;
-      var oneSegment = {x: categoryIdx,
-                        low: polygon.from,
-                        high: polygon.to};  // overlap to fill the gap
-      dataSet.push(oneSegment);
-    }
-  }
-  dataSet.sort(function(a,b) {
-    return (a.x > b.x) ? 1 : ((b.x > a.x) ? -1 : 0);
-  });
-
-  var futureSeries = {
-    type: 'columnrange',
-    id: seriesId,
-    name: appId,
-    animation: false,
-    borderWidth: 0,
-    color: rgba,
-    data: dataSet
-    // diffs: diffs,  // used by testPendingAllocation(), quick and dirty
-  };
-  return (dataSet.length !== 0) ? futureSeries : null;
-}
-
 function convertHex(hex,opacity){
     hex = hex.replace('#','');
     var r = parseInt(hex.substring(0,2), 16);
@@ -1034,22 +907,14 @@ function buildRackUsage(inData, start, finish, value) {
 // Nodes from the server carry rack and partition it belongs to.  So
 // the groupCollection structure is also made here.
 function processNodes(inNodes) {
-  // local partition varibles for ever changing partitions
-  // var partitionMap = {};
-  var partitionC = {};
-  var localPartitions = [];
-
-  if (nodesProcessed && !havePartitions) {
+  if (nodesProcessed) {
     return;  // don't need re-process racks because they don't change
   }
 
   $.each(inNodes, function(index, inNode) {
     var nodeId = inNode.nodeId.split('.')[0];
     var rackId = inNode.rack.substr(1);
-    var partitionId = inNode.partition;  // may be undefined, may need processing
-    havePartitions = (partitionId === undefined) ? false : true;
 
-    if (!nodesProcessed) { // create nodeCollection and rackCollection only once
       var node = {};
       node.fullId = inNode.nodeId;
       node.categoryIdx = -1;  // node's chart category index, -1 -> rack collapsed
@@ -1070,60 +935,12 @@ function processNodes(inNodes) {
         rack.categoryIdx = -1;
         rack.expanded = true;
       }
-    }
-    if (partitionId === undefined) {
-      return true;  // proces next node
-    }
-
-    if (partitionId in partitionC) {  // use local collection
-        partitionC[partitionId].nodes.push(nodeId);  // add node into pInfo
-    } else {
-      var partition = new partitionInfo(partitionId);
-      partitionC[partitionId] = partition;
-
-      partition.fullId = inNode.partition;
-      partition.nodes = [nodeId];
-      partition.button = null;
-      partition.categoryIdx = -1;
-      partition.expanded = true;
-    }
   });
-
-  // add fake p0 with all nodes, in case there is no partition
-  if (Object.keys(partitionC).length === 0) {
-    var partition = new partitionInfo('p0');
-    partitionC.p0 = partition;
-    partition.fullId = 'p0';
-    partition.nodes = [];
-    partition.button = null;
-    partition.categoryIdx = -1;
-    partition.expanded = true;
-
-    for (var nodeId in nodeCollection) {
-      partition.nodes.push(nodeId);
-    }
-  }
 
   // racks and the nodes on each rack are sorted alphabetically
   racks = Object.keys(rackCollection).sort();
   for (var r in racks) {
     rackCollection[racks[r]].nodes.sort();
-  }
-
-  categoriesChanged = false;
-
-  // compare old and new parttioning.  According to partition change rules
-  // partitions can only split into finer partitioning.  So we only need to
-  // compare the size of the two partitions.
-  localPartitions = Object.keys(partitionC).sort();
-  if (!nodesProcessed ||
-      (havePartitions && localPartitions.length !== partitions.length)) {
-    for (var p in localPartitions) {
-      partitionC[localPartitions[p]].nodes.sort();
-    }
-    prevPartitionCollection = partitionCollection;  // keep last partitioning
-    partitionCollection = partitionC;
-    partitions = localPartitions;
   }
 
   groupCollection = rackCollection;
@@ -1431,7 +1248,7 @@ function getDataOneIteration(data) {
 
   // update chart if already exists
   if (chart !== null) {
-    updateChart(categoriesChanged);
+    updateChart();
   } else {
     makeChart();
   }
