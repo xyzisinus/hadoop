@@ -43,7 +43,6 @@ var chartHeight = 0;
 var windowChartWidthDiff = 0;
 
 var havePartitions = false;
-var displayBy = 'rack';  // or partition.  can be preset as default
 var nodeCollection = {};  // node id -> app usage, state, categoriesIdx, etc
 var prevGroupCollection = null;
 var groupCollection = null;
@@ -149,7 +148,6 @@ function atlasPageEntryPoint() {
     on_label: 'partition',
     off_label: 'rack'
   }).change(function() {
-    displayBy = this.checked ? 'partition' : 'rack';
     if (chart === null) {  // xxx not the best testing condition
       return;
     }
@@ -164,10 +162,6 @@ function atlasPageEntryPoint() {
 
     updateChart('categoriesChanged');
   });
-  // button default state is "rack".  But if it's not:
-  if (displayBy === 'partition') {
-    groupByButton.switchButton({checked: true});
-  }
 
   collapseAllButton = $('<input id="collapseAllButton" type="checkbox" value="0">');
   collapseAllButton.appendTo($('#collapseAll'));  // parent is on html page
@@ -457,25 +451,6 @@ function makeChart() {
   });
 
   recordAppSeriesColor();
-
-  // pending allocations need to use the colors of the matching apps.
-  // so we have to wait ater chart's creation to get the colors
-  var addedPendingAllocations = false;
-  if (displayBy === 'partition') {
-    for (var partitionId in groupCollection) {
-      // var seriesArray = testPendingAllocation(); // for testing
-      var seriesArray = makePendingAllocSeriesForOnePartition(partitionId);
-      for (var s in seriesArray) {
-        chart.addSeries(seriesArray[s], false);
-        chartProps.haveData = true;
-        addedPendingAllocations = true;
-      }
-    }
-    if (addedPendingAllocations) {
-      chart.redraw();
-    }
-  }
-
   addButtons();
   addTimelineMaybe();
 }
@@ -680,7 +655,7 @@ function addButtons() {
           updateChart('categoriesChanged');
         });
       } else {  // rack is collapsed
-        y = $(label).offset().top;
+        y = $(label).offset().top + 20;
         x = nodeLabelX;
         // when all groups are collapsed, nodeLabelX is zero.
         // then place the button to the right of rack label
@@ -896,72 +871,6 @@ function convertHex(hex,opacity){
     return result;
 }
 
-function makePendingAllocSeriesForOnePartition(partitionId) {
-  if (displayBy !== 'partition') {
-    return [];
-  }
-
-  var partition = groupCollection[partitionId];
-  var data = [];
-  var seriesArray = [];
-
-  var now = new Date().getTime();
-  var k = 0;
-  var appId, prevData, currentData;
-  for (appId in apps) {
-    var app = apps[appId];
-    if (app.serverState === 'RUNNING' && app.estimatedFinishTime > now) {
-      prevData = duplicateUsageData(data);
-      for (var n in partition.nodes) {
-        var nodeId = partition.nodes[n];
-        if (nodeId in app.nodesOccupied) {
-          data = buildRackUsage(data, now + 6000, app.estimatedFinishTime, 1);
-        }
-      }
-      if (partition.expanded) {
-        currentData = duplicateUsageData(data);
-        var appFutureSeries = makePartitionAppSeries('future', partition,
-                                                     appId, prevData,
-                                                     currentData);
-        if (appFutureSeries !== null) {
-          seriesArray.push(appFutureSeries);
-        }
-      }
-    }
-  }
-
-  for (appId in apps) {
-    // if (++k > 2) { break; }  // control the number of apps
-
-    if (partitionId in apps[appId].partitionsAllocated) {
-      var pAllocation = apps[appId].partitionsAllocated[partitionId];
-      prevData = duplicateUsageData(data);
-      for (var i in pAllocation) {
-        data = buildRackUsage(data, pAllocation[i].from, pAllocation[i].to,
-                              pAllocation[i].value);
-      }
-      if (partition.expanded) {
-        currentData = duplicateUsageData(data);
-        var partitionAppSeries = makePartitionAppSeries('pending', partition,
-                                                        appId, prevData,
-                                                        currentData);
-        if (partitionAppSeries !== null) {
-          seriesArray.push(partitionAppSeries);
-        }
-      }
-    }
-  }
-
-  if (!partition.expanded) {
-    var s = makeCollapsedGroupSeries('future', partition, data);
-    if (s !== null) {
-      seriesArray.push(s);
-    }
-  }
-
-  return seriesArray;
-}
-
 function buildRackUsage(inData, start, finish, value) {
   var data = inData;
   var newInterval = null;
@@ -972,8 +881,13 @@ function buildRackUsage(inData, start, finish, value) {
 
   // if not testing data, trim the time to accuracy of a second.
   // small variations in job start time make too many unnecessary intervals
+  /*
   var startTime = (start > 1000000) ? start - start % 1000 : start;
   var finishTime = (finish > 1000000) ? finish - finish % 1000 : finish;
+  */
+  var startTime = start;
+  var finishTime = finish;
+
   /*
   var startTime = start;
   var finishTime = finish;
@@ -1208,24 +1122,12 @@ function processNodes(inNodes) {
       partitionC[localPartitions[p]].nodes.sort();
     }
     prevPartitionCollection = partitionCollection;  // keep last partitioning
-    // currently "display by partition" AND partition has changed:
-    // save the current partitioning.  non-null prevGroupC will trigger
-    // category change in updateChart.
-    if (displayBy === 'partition') {
-      prevGroupCollection = partitionCollection;  // keep last partitioning
-    }
-
     partitionCollection = partitionC;
     partitions = localPartitions;
   }
 
-  if (displayBy === 'rack') {
-    groupCollection = rackCollection;
-    groups = racks;
-  } else {
-    groupCollection = partitionCollection;
-    groups = partitions;
-  }
+  groupCollection = rackCollection;
+  groups = racks;
 
   nodesProcessed = true;
 }
@@ -1682,25 +1584,6 @@ function updateChart(categoriesChanged) {
   }
 
   recordAppSeriesColor();
-
-  // pending allocations need to use the colors of the matching apps.
-  // so we have to wait ater the app's series (even when it's empty)
-  // has been created.
-  var addedPendingAllocations = false;
-  if (displayBy === 'partition') {
-    for (var partitionId in groupCollection) {
-      // var seriesArray = testPendingAllocation(); // for testing
-      var seriesArray = makePendingAllocSeriesForOnePartition(partitionId);
-      for (s in seriesArray) {
-        chart.addSeries(seriesArray[s], false);
-        chartProps.haveData = true;
-        addedPendingAllocations = true;
-      }
-    }
-    if (addedPendingAllocations) {
-      chart.redraw();
-    }
-  }
 
   // this should be done after the allocation partitions is put in
   addTimelineMaybe();
