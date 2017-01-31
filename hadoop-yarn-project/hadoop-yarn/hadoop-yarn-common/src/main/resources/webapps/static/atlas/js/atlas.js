@@ -42,7 +42,6 @@ var chartHeight = 0;
 var windowChartWidthDiff = 0;
 
 var nodeCollection = {};  // node id -> app usage, state, categoriesIdx, etc
-var prevGroupCollection = null;
 var groupCollection = null;
 var groups = null;  // sorted racks or partitions
 var allExpanded = true;  // reflect the collapse/expand all button
@@ -50,8 +49,6 @@ var collapseAllButton = null;
 var justResetCollapseAllButton = false;  // reset button without any action
 
 var appSeriesPrefix = 'Atlas_app_';
-var pendingAllocSeriesPrefix = 'Atlas_pending_allocation_';
-var appFutureSeriesPrefix = 'Atlas_app_future_';
 
 var rackCollection = {};  // rack id -> nodes, expanding state, etc
 var racks = [];  // sorted short rack id
@@ -66,33 +63,6 @@ rackInfo.prototype.seriesId = function() {
 };
 rackInfo.prototype.seriesColor = function() {
   return 'rgba(255, 165, 0, 0.3)';
-};
-
-var prevPartitionCollection = null;  // last version of partitioning
-var partitionCollection = null;  // partition id -> nodes, expanding state, etc
-var partitions = [];  // sorted short partition id
-function partitionInfo(partitionId) {
-  this.id = partitionId;
-}
-partitionInfo.prototype.kind = function() {
-  return 'partition';
-};
-partitionInfo.prototype.seriesId = function(type) {
-  if (type === 'future') {
-    return 'Atlas_partition_future_' + this.id;
-  } else {
-    return 'Atlas_partition_' + this.id;
-  }
-};
-partitionInfo.prototype.seriesColor = function(type) {
-  return (type === 'future') ?
-    'rgba(135, 204, 175, 0.3)' : 'rgba(255, 165, 0, 0.3)';
-};
-partitionInfo.prototype.pendingAllocSeriesId = function(appId) {
-  return pendingAllocSeriesPrefix + this.id + '_' + appId;
-};
-partitionInfo.prototype.appFutureSeriesId = function(appId) {
-  return appFutureSeriesPrefix + this.id + '_' + appId;
 };
 
 var minute = 1000 * 60;
@@ -320,11 +290,6 @@ function makeTooltip(series) {
   var elapsedTime = (app.appServerState === 'FINISHED') ?
     intervalToHms(finishTime - app.startTime) :
     intervalToHms(now - app.startTime);
-  if (series.options.id.startsWith(pendingAllocSeriesPrefix)) {
-    nContainers = app.pendingAllocContainers;
-    finishTime = app.pendingAllocFinishTime;
-    containerType = 'Planned-ahead';
-  }
 
   if ('jobType' in app) {
     tooltip += 'Job Type: ' + app.jobType + '<br>';
@@ -904,8 +869,8 @@ function buildRackUsage(inData, start, finish, value) {
   return data;
 }  // buildRackUsage()
 
-// Nodes from the server carry rack and partition it belongs to.  So
-// the groupCollection structure is also made here.
+// Nodes from the server have rack property.  So groupCollection structure
+// is also made here.
 function processNodes(inNodes) {
   if (nodesProcessed) {
     return;  // don't need re-process racks because they don't change
@@ -1023,7 +988,6 @@ function updateAppState(inApp, nodesOccupied, pendingAllocations, finished) {
   } else {
     apps[id].state = 'unchanged';
   }
-  apps[id].partitionsAllocated = {};
 
   apps[id].startTime = inApp.startTime;
   apps[id].finishTime = (inApp.finishTime === 0) ?
@@ -1071,46 +1035,9 @@ function updateAppState(inApp, nodesOccupied, pendingAllocations, finished) {
     }
   }
   apps[id].nodesOccupied = newList;
-
-  // partition allcated for each app: a skyline structure like rack usage data
-  $.each(pendingAllocations, function(a, allocation) {
-    for (var p in allocation.partitions) {
-      var allocationForP = [];
-      if (p in apps[id].partitionsAllocated) {  // already recorded
-        allocationForP = apps[id].partitionsAllocated[p];
-      }
-      // dump server data when pending allocation is not in the future
-      var now = timeInCurrentLoop;
-      if (allocation.startTime + 5000 < now &&  // 5 seconds grace period
-          !dumpedServerDataOnceInUpdateAppState && !useCapturedData) {
-        dumpedServerDataOnceInUpdateAppState = true;
-        catchServerData = true;
-        errorMsgToDump = 'invalid pending allocation ' + id;
-      }
-      allocationForP = buildRackUsage(allocationForP,
-                                      allocation.startTime,
-                                      allocation.finishTime,
-                                      allocation.partitions[p]);
-      apps[id].partitionsAllocated[p] = allocationForP;
-      if (allocation.finishTime > apps[id].pendingAllocFinishTime) {
-        apps[id].pendingAllocFinishTime = allocation.finishTime;
-      }
-      apps[id].pendingAllocContainers += allocation.partitions[p];
-    }
-  });
 }
 
 function processApps(inApps) {
-  // pending allocations for an app can linger if the app doesn't show
-  // up anymore in server data.  The server should be responsible for
-  // serving app data whose pending allocations that eventually dissolve as
-  // the app goes through the pipeline.  However, suppose the UI gets
-  // disconnected with the server, then it may not get the app's data at all
-  // stages to clean up pending allocations.
-  for (var appId in apps) {
-    apps[appId].partitionsAllocated = {};
-  }
-
   $.each(inApps, function(index, inApp) {
     var finishedApp = false;
     var nodesOccupied = {};  // node -> [startTime, finishTime]
@@ -1271,7 +1198,7 @@ function updateChart(categoriesChanged) {
   var layoutChanged = false;
 
   var rack, rackId;
-  if (categoriesChanged !== undefined || prevGroupCollection !== null) {
+  if (categoriesChanged !== undefined) {
     var bandIds = [];
     var lineIds = [];
     var b, l;
@@ -1304,14 +1231,8 @@ function updateChart(categoriesChanged) {
       chart.xAxis[0].addPlotLine(newProps.plotLines[l]);
     }
 
-    // get "older" group collection which is set
-    // in two cases: rack/partition switch and partition change
-    var oldCollection = groupCollection;
-    if (prevGroupCollection !== null) {
-      oldCollection = prevGroupCollection;
-    }
-    for (rackId in oldCollection) {  // can be rack or partition
-      rack = oldCollection[rackId];
+    for (rackId in groupCollection) {  // can be rack or partition
+      rack = groupCollection[rackId];
       if (chart.get(rack.seriesId()) !== null) {
         chart.get(rack.seriesId()).remove(false);
       }
@@ -1322,8 +1243,6 @@ function updateChart(categoriesChanged) {
       rack.button.remove();  // remove the old buttons
       rack.button = null;
     }
-
-    prevGroupCollection = null;
 
     chart.xAxis[0].setCategories(newProps.groupedCategories, false);
     chart.xAxis[0].setExtremes(newProps.xMin, newProps.xMax);
@@ -1353,20 +1272,6 @@ function updateChart(categoriesChanged) {
     } else {
       chart.get(rack.seriesId()).setData(rackSeries.data, false);
     }
-  }
-
-  // collect pending_allocation and app future series ids and remove.
-  // two steps for data integrity.
-  var seriesIds = [];
-  var s;
-  for (s in chart.series) {
-    if (chart.series[s].options.id.startsWith(pendingAllocSeriesPrefix) ||
-        chart.series[s].options.id.startsWith(appFutureSeriesPrefix)) {
-      seriesIds.push(chart.series[s].options.id);
-    }
-  }
-  for (var i in seriesIds) {
-    chart.get(seriesIds[i]).remove(false);
   }
 
   // renew apps for uncollapsed nodes
