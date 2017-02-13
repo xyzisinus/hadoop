@@ -131,7 +131,7 @@ function atlasPageEntryPoint() {
   // resizes, resize the chart using then window size minus diff.
   windowChartWidthDiff = window.innerWidth - $('#chart_container').width();
 
-  $(window).resize(function(){
+  $(window).resize(function() {
     if (chart !== null) {
       chart.setSize(window.innerWidth - windowChartWidthDiff, chartHeight, false);
     }
@@ -391,7 +391,7 @@ function makeChart() {
 
   recordAppSeriesColor();
   addButtons();
-  addTimelineMaybe();
+  processTimeline();
 }
 
 function elt(id) {
@@ -402,6 +402,12 @@ function positionTimeline() {
   if (elt('timelinebox') === null || elt('highcharts-0') === null) {
     return;
   }
+
+  var marginLeft = chart.plotBox.x;
+  timelineBox.css('left', marginLeft + $('#chart_container').offset().left);
+  timelineBox.css('position', 'fixed');
+  var width = $(chart.container).width() - chart.marginRight - marginLeft;
+  timelineBox.width(width);
 
   var $chart = elt('highcharts-0');
   var $fixed = elt('timelinebox');
@@ -434,40 +440,24 @@ function onload() {
   positionTimeline();
 }
 
-function addTimelineMaybe() {
-  positionTimeline();
-  if (!chartProps.haveData) {
-    return;
-  }
-
-  var min = chart.yAxis[0].getExtremes().min;
-  var max = chart.yAxis[0].getExtremes().max;
-
-  if (timeline !== null) {
-    timeline.setWindow(min, max);
-    return;
-  }
-
+function createTimeline() {
+  // create container for timeline
   timelineBox = $('<div>').appendTo($('#general_container'));
   timelineBox.attr('id', 'timelinebox');
   timelineBox.css('background', 'rgba(255, 255, 255, 0.9)');
   timelineBox.css('font-weight', 'bold');
 
-  var marginLeft = chart.plotBox.x;
-  timelineBox.css('left', marginLeft + $('#chart_container').offset().left);
-  timelineBox.css('right', chart.marginRight);
-  timelineBox.css('position', 'fixed');
-
   // increase the height of parent div for timeline
   var content = $('#general_container');
   var height = content.height() + 100;
   content.height(height);
-  positionTimeline();  // position the timeline box
 
+  // add hook for timeline repositioning after scroll
   $(window).scroll(function(){
     positionTimeline();
   });
 
+  // add hood for click (select) and double click (go to default)
   var firstClickOnTimeline = true;
   timelineBox.on('click', function(e) {
     // only show help message on the first click
@@ -498,6 +488,9 @@ function addTimelineMaybe() {
       reminderBox.remove();
     }, 5000);
   });
+
+  var min = chart.yAxis[0].getExtremes().min;
+  var max = chart.yAxis[0].getExtremes().max;
 
   // Configuration for the Timeline
   var options = {start: min, end: max,
@@ -540,6 +533,23 @@ function addTimelineMaybe() {
     var value = $(this).val();
     console.log('radio button', value);
   });
+}
+
+// Called after chart creation and update
+function processTimeline() {
+  if (timeline === null && chartProps.haveData) {
+    createTimeline()
+  }
+
+  if (timeline === null) {  // still have no timeline
+    return;
+  }
+
+  var min = chart.yAxis[0].getExtremes().min;
+  var max = chart.yAxis[0].getExtremes().max;
+  timeline.setWindow(min, max);
+
+  positionTimeline()
 
   mayStartNowLine = true;
   updateNowLine();
@@ -1308,7 +1318,7 @@ function updateChart(categoriesChanged) {
   recordAppSeriesColor();
 
   // this should be done after the allocation partitions is put in
-  addTimelineMaybe();
+  processTimeline();
 
   // console.log(chart.series);
 }
