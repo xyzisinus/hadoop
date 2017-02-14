@@ -418,6 +418,10 @@ function updateChart(categoriesChanged) {
 
 ///// incoming data processing /////
 
+function intervalsOverlap(d1, d2) {
+  return (d1[0] < d2[1] && d2[0] < d1[1]) ? true : false;
+}
+
 function updateAppState(inApp, nodesOccupied, pendingAllocations, finished) {
   var id = inApp.applicationId;
   // app has already finished when first seen.  ignore.
@@ -589,6 +593,258 @@ function processNodes(inNodes) {
   nodesProcessed = true;
 }
 
+///// data related chart ops /////
+
+function makeCollapsedGroupSeries(type, group, data) {
+  var dataSet = [];
+  var b = group.categoryIdx + 0.5;
+  var nNodes = group.nodes.length;
+  for (var i = 0; i < data.length; i++) {
+    var h = b - Number(data[i].value) / Number(nNodes);
+    // console.log('height', h, b, data[i].value);
+
+    if (i > 0) { // not the first interval
+      if (data[i].from === data[i-1].to) {
+        dataSet.pop();  // merge two intervals into one polygon
+      } else {
+        dataSet.push([null, null]);  // add a separator
+        dataSet.push([b, data[i].from]);
+      }
+    } else {
+      dataSet.push([b, data[i].from]);
+    }
+    dataSet.push([h, data[i].from]);
+    dataSet.push([h, data[i].to]);
+    dataSet.push([b, data[i].to]);
+  }
+
+  var groupSeries = {
+    type: 'polygon',
+    showInLegend: false,
+    id: group.seriesId(type),
+    name: group.seriesId(type),
+    // enableMouseTracking: false,
+    shadow: true,
+    color: group.seriesColor(type),
+    data: dataSet
+  };
+
+  return (dataSet.length === 0) ? null: groupSeries;
+}
+
+function makeSeriesForOneRack(rackId) {
+  var rack = groupCollection[rackId];
+  var data = [];
+
+  for (var appId in apps) {
+    var app = apps[appId];
+    for (var n in rack.nodes) {
+      var nodeId = rack.nodes[n];
+      if (nodeId in app.nodesOccupied) {
+        var duration = app.nodesOccupied[nodeId];
+        data = buildRackUsage(data, duration[0], duration[1], 1);
+      }
+    }
+  }
+
+  return makeCollapsedGroupSeries(rack.kind(), rack, data);
+}
+
+function buildRackUsage(inData, start, finish, value) {
+  var data = inData;
+  var newInterval = null;
+  var interval = null;
+  var i = 0;
+  var startIdx = -1;
+  var endIdx = -1;
+
+  // if not testing data, trim the time to accuracy of a second.
+  // small variations in job start time make too many unnecessary intervals
+  /*
+  var startTime = (start > 1000000) ? start - start % 1000 : start;
+  var finishTime = (finish > 1000000) ? finish - finish % 1000 : finish;
+  */
+  var startTime = start;
+  var finishTime = finish;
+
+  /*
+  var startTime = start;
+  var finishTime = finish;
+  */
+
+  // each rack data point is to/from/value.  to/from is time interval.
+  // value is how many nodes are occupied in the interval.
+  // we will increment the value of the intervals that are
+  // in startTime/finishTime range and insert intervals to fill the gaps.
+
+  // first, search for intervals that will be affected.
+  // start/endIdx are the indices of the resulting range.
+  for (i = data.length - 1; i >= 0; i--) {
+    interval = data[i];
+    // startTime is just before the resulting startIdx or on the interval
+    if (startTime < interval.from) {
+      startIdx = i;
+      continue;
+    }
+    if(startTime >= interval.from && startTime < interval.to) {
+      startIdx = i;
+      break;
+    }
+    if (startTime >= interval.to) {
+      break;
+    }
+  }
+  for (i = 0; i < data.length; i++) {
+    interval = data[i];
+    // finishTime is just after the resulting endIdx or on the interval
+    if (finishTime > interval.to) {
+      endIdx = i;
+      continue;
+    }
+    if (finishTime > interval.from && finishTime <= interval.to) {
+      endIdx = i;
+      break;
+    }
+    if (finishTime <= interval.from) {
+      break;
+    }
+  }
+  // end condition: startIdx = -1 if new range is at the end.
+  // endIdx = -1 if new range is at the beginning.
+  // both = -1 if data is empty.
+  // console.log('range affected', startTime, finishTime, startIdx, endIdx);
+
+  if (startIdx === -1 || endIdx === -1) {
+    newInterval = {from: startTime,
+                   to: finishTime,
+                   value: value};
+    data.splice(((endIdx !== -1) ? endIdx + 1 : 0), 0, newInterval);
+    // console.log('simple insert');
+    return data;
+  }
+
+  // when start/finish time is in an interval, split
+  interval = data[startIdx];
+  var tmp = Object.assign({}, interval);
+  if (startTime > interval.from) {
+    // split interval into two.  First part is not in start/finish range
+    newInterval = {from: startTime,
+                   to: interval.to,
+                   value: interval.value};
+    data.splice(++startIdx, 0, newInterval);
+    endIdx++;  // shift end index as well
+    interval.to = startTime;
+    // console.log('split start piece', tmp, interval, newInterval);
+  }
+
+  interval = data[endIdx];
+  tmp = Object.assign({}, interval);
+  if (finishTime < interval.to) {
+    newInterval = {from: finishTime,
+                   to: interval.to,
+                   value: interval.value};
+    data.splice(endIdx + 1, 0, newInterval);
+    interval.to = finishTime;
+    // console.log('split end piece at endIdx', tmp, data[endIdx], data[endIdx+1]);
+  }
+
+  // slice data into three parts: before, range, after
+  var before = data.slice(0, startIdx);  // may result empty array
+  var range = data.slice(startIdx, endIdx + 1);  // may be empty
+  var after = data.slice(endIdx + 1, data.length);  // may be empty
+
+  // add 1 to exiting intervals and fill the gap between and on either end
+  // of the range.  loop backward to avoid index shifting
+  for (i = range.length - 1; i >= 0; i--) {
+    // console.log('before increment', i, range[i]);
+    range[i].value += value;
+
+    if (i === range.length - 1 && finishTime > range[i].to) {
+      newInterval = {from: range[i].to,
+                     to: finishTime,
+                     value: value};
+      range.push(newInterval);  // add at the end
+      // console.log('push', i, newInterval);
+    }
+    if (i > 0 && range[i - 1].to < range[i].from) {  // fill gap in between
+      newInterval = {from: range[i - 1].to,
+                     to: range[i].from,
+                     value: value};
+      range.splice(i, 0, newInterval);
+      // console.log('fill gap', i, newInterval);
+    }
+    if (i === 0 && startTime < range[i].from) {
+      newInterval = {from: startTime,
+                     to: range[i].from,
+                     value: value};
+      range.unshift(newInterval);  // insert at the beginning
+      // console.log('unshift', i, newInterval);
+    }
+  }
+  if (range.length === 0) {  // start/finish range falls in a gap
+    newInterval = {from: startTime,
+                   to: finishTime,
+                   value: value};
+    range.push(newInterval);
+    // console.log('only one', newInterval);
+  }
+
+  // merge two touching intervals with same value.  This can happen
+  // ONLY at either end of the range
+  if (before.length !== 0 &&
+      before[before.length - 1].to === range[0].from &&
+      before[before.length - 1].value === range[0].value) {
+    // console.log('merge first', before[before.length - 1], range[0]);
+    range[0].from = before[before.length - 1].from;
+    before.pop();
+  }
+  if (after.length !== 0 &&
+      after[0].from === range[range.length - 1].to &&
+      after[0].value === range[range.length - 1].value) {
+    // console.log('merge last', range[range.length - 1], after[0]);
+    after[0].from = range[range.length - 1].from;
+    range.pop();
+  }
+
+  data = before.concat(range, after);
+  return data;
+}  // buildRackUsage()
+
+
+function makeSeriesForOneApp(appId) {
+  var dataSet = [];
+
+  $.each(apps[appId].nodesOccupied, function(n, duration) {
+    if (nodeCollection[n].categoryIdx !== -1) {  // node is in collapsed group
+      dataSet.push({x: nodeCollection[n].categoryIdx,
+                    low: duration[0],
+                    high: duration[1]});
+    }
+  });
+  $.each(apps[appId].nodeUseHistory, function(n, history) {
+    if (nodeCollection[n].categoryIdx !== -1) {
+      for (var i in history) {
+        dataSet.push({x: nodeCollection[n].categoryIdx,
+                      low: history[i][0],
+                      high: history[i][1]});
+      }
+    }
+  });
+  // sort data on time axis to please highchart
+  dataSet.sort(function(a,b) {
+    return (a.x > b.x) ? 1 : ((b.x > a.x) ? -1 : 0);
+  });
+
+  var appSeries = {
+    type: 'columnrange',
+    id: apps[appId].seriesId,
+    name: appId,
+    data: dataSet
+  };
+
+  // no category touched by app. it can happen with rack collapse
+  return appSeries;  // data can be emtpy, like []
+}
 
 // dump data (whatever) into json format and create a download link
 // how to use: add "catchServerData = true" in a button click event
@@ -1012,260 +1268,6 @@ function addButtons() {
   });
 }
 
-function makeCollapsedGroupSeries(type, group, data) {
-  var dataSet = [];
-  var b = group.categoryIdx + 0.5;
-  var nNodes = group.nodes.length;
-  for (var i = 0; i < data.length; i++) {
-    var h = b - Number(data[i].value) / Number(nNodes);
-    // console.log('height', h, b, data[i].value);
-
-    if (i > 0) { // not the first interval
-      if (data[i].from === data[i-1].to) {
-        dataSet.pop();  // merge two intervals into one polygon
-      } else {
-        dataSet.push([null, null]);  // add a separator
-        dataSet.push([b, data[i].from]);
-      }
-    } else {
-      dataSet.push([b, data[i].from]);
-    }
-    dataSet.push([h, data[i].from]);
-    dataSet.push([h, data[i].to]);
-    dataSet.push([b, data[i].to]);
-  }
-
-  var groupSeries = {
-    type: 'polygon',
-    showInLegend: false,
-    id: group.seriesId(type),
-    name: group.seriesId(type),
-    // enableMouseTracking: false,
-    shadow: true,
-    color: group.seriesColor(type),
-    data: dataSet
-  };
-
-  return (dataSet.length === 0) ? null: groupSeries;
-}
-
-function makeSeriesForOneRack(rackId) {
-  var rack = groupCollection[rackId];
-  var data = [];
-
-  for (var appId in apps) {
-    var app = apps[appId];
-    for (var n in rack.nodes) {
-      var nodeId = rack.nodes[n];
-      if (nodeId in app.nodesOccupied) {
-        var duration = app.nodesOccupied[nodeId];
-        data = buildRackUsage(data, duration[0], duration[1], 1);
-      }
-    }
-  }
-
-  return makeCollapsedGroupSeries(rack.kind(), rack, data);
-}
-
-function intervalsOverlap(d1, d2) {
-  return (d1[0] < d2[1] && d2[0] < d1[1]) ? true : false;
-}
-
-function buildRackUsage(inData, start, finish, value) {
-  var data = inData;
-  var newInterval = null;
-  var interval = null;
-  var i = 0;
-  var startIdx = -1;
-  var endIdx = -1;
-
-  // if not testing data, trim the time to accuracy of a second.
-  // small variations in job start time make too many unnecessary intervals
-  /*
-  var startTime = (start > 1000000) ? start - start % 1000 : start;
-  var finishTime = (finish > 1000000) ? finish - finish % 1000 : finish;
-  */
-  var startTime = start;
-  var finishTime = finish;
-
-  /*
-  var startTime = start;
-  var finishTime = finish;
-  */
-
-  // each rack data point is to/from/value.  to/from is time interval.
-  // value is how many nodes are occupied in the interval.
-  // we will increment the value of the intervals that are
-  // in startTime/finishTime range and insert intervals to fill the gaps.
-
-  // first, search for intervals that will be affected. 
-  // start/endIdx are the indices of the resulting range.
-  for (i = data.length - 1; i >= 0; i--) {
-    interval = data[i];
-    // startTime is just before the resulting startIdx or on the interval
-    if (startTime < interval.from) {
-      startIdx = i;
-      continue;
-    }
-    if(startTime >= interval.from && startTime < interval.to) {
-      startIdx = i;
-      break;
-    }
-    if (startTime >= interval.to) {
-      break;
-    }
-  }
-  for (i = 0; i < data.length; i++) {
-    interval = data[i];
-    // finishTime is just after the resulting endIdx or on the interval
-    if (finishTime > interval.to) {
-      endIdx = i;
-      continue;
-    }
-    if (finishTime > interval.from && finishTime <= interval.to) {
-      endIdx = i;
-      break;
-    }
-    if (finishTime <= interval.from) {
-      break;
-    }
-  }
-  // end condition: startIdx = -1 if new range is at the end.
-  // endIdx = -1 if new range is at the beginning.
-  // both = -1 if data is empty.
-  // console.log('range affected', startTime, finishTime, startIdx, endIdx);
-
-  if (startIdx === -1 || endIdx === -1) {
-    newInterval = {from: startTime,
-                   to: finishTime,
-                   value: value};
-    data.splice(((endIdx !== -1) ? endIdx + 1 : 0), 0, newInterval);
-    // console.log('simple insert');
-    return data;
-  }
-
-  // when start/finish time is in an interval, split
-  interval = data[startIdx];
-  var tmp = Object.assign({}, interval);
-  if (startTime > interval.from) {
-    // split interval into two.  First part is not in start/finish range
-    newInterval = {from: startTime,
-                   to: interval.to,
-                   value: interval.value};
-    data.splice(++startIdx, 0, newInterval);
-    endIdx++;  // shift end index as well
-    interval.to = startTime;
-    // console.log('split start piece', tmp, interval, newInterval);
-  }
-
-  interval = data[endIdx];
-  tmp = Object.assign({}, interval);
-  if (finishTime < interval.to) {
-    newInterval = {from: finishTime,
-                   to: interval.to,
-                   value: interval.value};
-    data.splice(endIdx + 1, 0, newInterval);
-    interval.to = finishTime;
-    // console.log('split end piece at endIdx', tmp, data[endIdx], data[endIdx+1]);
-  }
-
-  // slice data into three parts: before, range, after
-  var before = data.slice(0, startIdx);  // may result empty array
-  var range = data.slice(startIdx, endIdx + 1);  // may be empty
-  var after = data.slice(endIdx + 1, data.length);  // may be empty
-
-  // add 1 to exiting intervals and fill the gap between and on either end
-  // of the range.  loop backward to avoid index shifting
-  for (i = range.length - 1; i >= 0; i--) {
-    // console.log('before increment', i, range[i]);
-    range[i].value += value;
-
-    if (i === range.length - 1 && finishTime > range[i].to) {
-      newInterval = {from: range[i].to,
-                     to: finishTime,
-                     value: value};
-      range.push(newInterval);  // add at the end
-      // console.log('push', i, newInterval);
-    }
-    if (i > 0 && range[i - 1].to < range[i].from) {  // fill gap in between
-      newInterval = {from: range[i - 1].to,
-                     to: range[i].from,
-                     value: value};
-      range.splice(i, 0, newInterval);
-      // console.log('fill gap', i, newInterval);
-    }
-    if (i === 0 && startTime < range[i].from) {
-      newInterval = {from: startTime,
-                     to: range[i].from,
-                     value: value};
-      range.unshift(newInterval);  // insert at the beginning
-      // console.log('unshift', i, newInterval);
-    }
-  }
-  if (range.length === 0) {  // start/finish range falls in a gap
-    newInterval = {from: startTime,
-                   to: finishTime,
-                   value: value};
-    range.push(newInterval);
-    // console.log('only one', newInterval);
-  }
-
-  // merge two touching intervals with same value.  This can happen
-  // ONLY at either end of the range
-  if (before.length !== 0 &&
-      before[before.length - 1].to === range[0].from &&
-      before[before.length - 1].value === range[0].value) {
-    // console.log('merge first', before[before.length - 1], range[0]);
-    range[0].from = before[before.length - 1].from;
-    before.pop();
-  }
-  if (after.length !== 0 &&
-      after[0].from === range[range.length - 1].to &&
-      after[0].value === range[range.length - 1].value) {
-    // console.log('merge last', range[range.length - 1], after[0]);
-    after[0].from = range[range.length - 1].from;
-    range.pop();
-  }
-
-  data = before.concat(range, after);
-  return data;
-}  // buildRackUsage()
-
-
-function makeSeriesForOneApp(appId) {
-  var dataSet = [];
-
-  $.each(apps[appId].nodesOccupied, function(n, duration) {
-    if (nodeCollection[n].categoryIdx !== -1) {  // node is in collapsed group
-      dataSet.push({x: nodeCollection[n].categoryIdx,
-                    low: duration[0],
-                    high: duration[1]});
-    }
-  });
-  $.each(apps[appId].nodeUseHistory, function(n, history) {
-    if (nodeCollection[n].categoryIdx !== -1) {
-      for (var i in history) {
-        dataSet.push({x: nodeCollection[n].categoryIdx,
-                      low: history[i][0],
-                      high: history[i][1]});
-      }
-    }
-  });
-  // sort data on time axis to please highchart
-  dataSet.sort(function(a,b) {
-    return (a.x > b.x) ? 1 : ((b.x > a.x) ? -1 : 0);
-  });
-
-  var appSeries = {
-    type: 'columnrange',
-    id: apps[appId].seriesId,
-    name: appId,
-    data: dataSet
-  };
-
-  // no category touched by app. it can happen with rack collapse
-  return appSeries;  // data can be emtpy, like []
-}
 
 
 // =================================================================== //
