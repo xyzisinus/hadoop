@@ -74,35 +74,7 @@ var fakeSeriesId = 'atlas_fake_series';
 // an app has an index to the series array for the chart
 var apps = {};
 
-// dump data (whatever) into json format and create a download link
-// how to use: add "catchServerData = true" in a button click event
-// hanler, e.g. expand/shrink button for racks.  Then at the next
-// data loop, the data will be dumped ONCE.
-var downloadLink = null;
-function dumpData(inData) {
-  var date = new Date();
-  var hours = date.getHours();
-  var minutes = "0" + date.getMinutes();
-  var seconds = "0" + date.getSeconds();
-  var formattedTime = hours + ':' + minutes.substr(-2) + ':' + seconds.substr(-2);
-  var header = formattedTime + ': ' + errorMsgToDump;
-  errorMsgToDump = '';
-  var text = header + '\n' + JSON.stringify(inData, null, 2);
-  var data = new Blob([text], {type: 'text/plain'});
-  var fileName = 'capturedData-' + formattedTime + '.txt';
-
-  if (downloadLink !== null) {
-    // destroy old link and data
-    window.URL.revokeObjectURL(downloadLink.href);
-    downloadLink.parentNode.removeChild(downloadLink);
-  }
-
-  var hrefStr = '<a download="' + fileName + '" id="downloadlink">Download captured data</a>';
-  $(hrefStr).prependTo($('#general_container'));  // parent is on html page
-  downloadLink = document.getElementById('downloadlink');
-  downloadLink.href = window.URL.createObjectURL(data);
-  downloadLink.style.display = 'block';
-}
+///// top level functions /////
 
 function atlasPageEntryPoint() {
   document.title = 'Application Atlas';  // title for browser tab
@@ -154,6 +126,326 @@ function atlasPageEntryPoint() {
     }
   }, 1000 * 3);
 }
+
+function getDataLoop() {
+  // capturedData and related variables are in a separate script
+  if (typeof useCapturedData === 'undefined') {
+    useCapturedData = false;
+  }
+  if (useCapturedData) {
+    var nodes = getNodesFromCapturedData();
+    var apps;
+    if (doRefresh) {
+      if (nRefresh === 0) {
+        apps = [];
+      } else {
+        apps = getAppsFromCapturedData().slice(0, nRefresh);
+      }
+      getDataOneIteration({nodes: nodes, apps: apps});
+      nRefresh++;
+      if (nRefresh % 10 === 0) {
+        addOneNode(0);  // add a node into app 0
+      }
+      if (nRefresh === 5) {
+        finishOneApp(2);  // finish the app but will start later
+      }
+      if (nRefresh === 7) {
+        restartOneApp(2);  // restart preempted job
+      }
+      if (nRefresh === 10) {
+        finishOneApp(2);  // finish the app but will start later
+      }
+      if (nRefresh === 14) {
+        restartOneApp(2);  // restart preempted job
+      }
+      // maxAppFinishTime is defined in capturedData.js
+      if (maxAppFinishTime !== 0 && new Date().getTime() > maxAppFinishTime) {
+        doRefresh = false;
+      }
+    } else {
+      nodes = getNodesFromCapturedData();
+      apps = getAppsFromCapturedData().slice(0, 6);
+      // getDataOneIteration({nodes: nodes, apps: []});  // no apps
+      getDataOneIteration({nodes: nodes, apps: apps});
+    }
+    return;
+  }
+
+  var dataLink = '/cluster/atlasData/';
+  d3.json(dataLink, function(error, data) {
+    var inApps = [];
+    var inNodes = [];
+
+    if (error !== null) {
+      console.log('failed server request.  will retry', error.statusText);
+      return;
+    }
+
+    getDataOneIteration(data);
+  });
+}
+
+function getDataOneIteration(data) {
+  // If the app doesn't have the finish time, the finish time is the uniform
+  // current time of the data fetching loop.  This current time is also used
+  // to draw the "now" line.
+  timeInCurrentLoop = new Date().getTime();
+  currentTimeUsed = false;
+
+  if (catchServerData) {
+    catchServerData = false;
+    dumpData(data);
+  }
+  $.each(data, function(key, list) {
+    if (key === 'nodes') {
+      inNodes = data.nodes;
+    } else if (key === 'apps') {
+      inApps = data.apps;
+    }
+  });
+
+  processNodes(inNodes);
+  processApps(inApps);
+
+  // update chart if already exists
+  if (chart !== null) {
+    updateChart();
+  } else {
+    makeChart();
+  }
+}
+
+function makeChart() {
+  chartProps = makeCategories();
+
+  Highcharts.setOptions({
+    global : {
+      useUTC : false
+    }
+  });
+
+  for (var appId in apps) {
+    var appSeries = makeSeriesForOneApp(appId);
+    if (appSeries.data.length !== 0) {
+      series.push(appSeries);
+      chartProps.haveData = true;
+    }
+  }
+
+  if (!chartProps.haveData) {
+    series.push(makeFakeSeries());
+  }
+
+  chart = new Highcharts.Chart({
+    chart: {
+      height: chartHeight,
+      renderTo: 'chart_container',  // parent is on html page
+      type: 'columnrange',
+      inverted: true
+    },
+    title: {
+      text: chartTitle
+    },
+
+    xAxis: {
+      min: 0,
+      max: chartProps.nCategories - 1,
+      gridLineWidth: 0,
+      plotBands: chartProps.plotBands,
+      plotLines: chartProps.plotLines,
+      categories: chartProps.groupedCategories,
+      labels: {
+        style: {
+          color: 'red'
+        }
+      }
+    },
+
+    yAxis: {
+      gridLineWidth: 0,
+      type: 'datetime',
+      title: {
+        text: null
+      },
+      labels: {
+        enabled: false
+      },
+    },
+
+    legend: {
+      enabled: false,
+    },
+
+    tooltip: {
+      style: {fontSize: '13pt', lineHeight: '20%'},
+      formatter: function() {
+        return makeTooltip(this.series);
+      }
+    },
+
+    plotOptions: {
+      columnrange: {
+        stacking: 'normal'
+      },
+      series: {
+        pointPadding: 0,
+        groupPadding: 0
+      }
+    },
+
+    series: series
+  });
+
+  addButtons();
+  processTimeline();
+}
+
+function updateChart(categoriesChanged) {
+  var needRedraw = false;
+  var layoutChanged = false;
+
+  var rack, rackId;
+  if (categoriesChanged !== undefined) {
+    var bandIds = [];
+    var lineIds = [];
+    var b, l;
+
+    newProps = makeCategories();
+    layoutChanged = true;
+    needRedraw = true;
+
+    chart.setSize($('#chart_container').width(), chartHeight, false);
+
+    // must copy the band/line ids before removing.  highchart just
+    // uses MY bands and lines.  So if I loop through the bands, I'm
+    // doing removal on the dame data structure.
+    for (b in chartProps.plotBands) {
+      bandIds.push(chartProps.plotBands[b].id);
+    }
+    for (b in bandIds) {
+      chart.xAxis[0].removePlotBand(bandIds[b]);
+    }
+    for (b in newProps.plotBands) {
+      chart.xAxis[0].addPlotBand(newProps.plotBands[b]);
+    }
+    for (l in chartProps.plotLines) {
+      lineIds.push(chartProps.plotLines[l].id);
+    }
+    for (l in lineIds) {
+      chart.xAxis[0].removePlotLine(lineIds[l]);
+    }
+    for (l in newProps.plotLines) {
+      chart.xAxis[0].addPlotLine(newProps.plotLines[l]);
+    }
+
+    for (rackId in groupCollection) {  // can be rack or partition
+      rack = groupCollection[rackId];
+      if (chart.get(rack.seriesId()) !== null) {
+        chart.get(rack.seriesId()).remove(false);
+      }
+      if (chart.get(rack.seriesId('future')) !== null) {
+        chart.get(rack.seriesId('future')).remove(false);
+      }
+
+      rack.button.remove();  // remove the old buttons
+      rack.button = null;
+    }
+
+    chart.xAxis[0].setCategories(newProps.groupedCategories, false);
+    chart.xAxis[0].setExtremes(newProps.xMin, newProps.xMax);
+    newProps.haveData = chartProps.haveData;  // app data accumulate
+    chartProps = newProps;
+  }
+
+  // add rack series.
+  // If categories changed, code above should have removed old ones already.
+  for (rackId in groupCollection) {
+    rack = groupCollection[rackId];
+    if (rack.expanded) {
+      continue;
+    }
+
+    var rackSeries = makeSeriesForOneRack(rackId);
+    if (rackSeries === null) {  // rack data unchanged since last update
+      continue;
+    }
+
+    needRedraw = true;
+    if (rackSeries.data.length !== 0) {
+      chartProps.haveData = true;
+    }
+    if (chart.get(rack.seriesId()) === null) {
+      chart.addSeries(rackSeries, false);
+    } else {
+      chart.get(rack.seriesId()).setData(rackSeries.data, false);
+    }
+  }
+
+  // renew apps for uncollapsed nodes
+  for (var appId in apps) {
+    var app = apps[appId];
+    var seriesId = apps[appId].seriesId;
+    if (app.state == 'new' || app.state == 'updated' || layoutChanged) {
+      needRedraw = true;
+      var appSeries = makeSeriesForOneApp(appId);
+      if (appSeries.data.length !== 0) {
+        chartProps.haveData = true;
+      }
+      if (chart.get(seriesId) === null) {
+        chart.addSeries(appSeries, false);
+      } else {
+        chart.get(seriesId).setData(appSeries.data, false);
+      }
+    }
+  }
+
+  // leave fake series there but update it to fit the new categrories
+  if (chart.get(fakeSeriesId) !== null && layoutChanged){
+    chart.get(fakeSeriesId).setData(makeFakeSeries(), false);
+  }
+
+  if (needRedraw) {
+    chart.redraw();
+  }
+  updateNowLine();
+  if (layoutChanged) {
+    addButtons();
+  }
+
+  // this should be done after the allocation partitions is put in
+  processTimeline();
+}
+
+// dump data (whatever) into json format and create a download link
+// how to use: add "catchServerData = true" in a button click event
+// hanler, e.g. expand/shrink button for racks.  Then at the next
+// data loop, the data will be dumped ONCE.
+var downloadLink = null;
+function dumpData(inData) {
+  var date = new Date();
+  var hours = date.getHours();
+  var minutes = "0" + date.getMinutes();
+  var seconds = "0" + date.getSeconds();
+  var formattedTime = hours + ':' + minutes.substr(-2) + ':' + seconds.substr(-2);
+  var header = formattedTime + ': ' + errorMsgToDump;
+  errorMsgToDump = '';
+  var text = header + '\n' + JSON.stringify(inData, null, 2);
+  var data = new Blob([text], {type: 'text/plain'});
+  var fileName = 'capturedData-' + formattedTime + '.txt';
+
+  if (downloadLink !== null) {
+    // destroy old link and data
+    window.URL.revokeObjectURL(downloadLink.href);
+    downloadLink.parentNode.removeChild(downloadLink);
+  }
+
+  var hrefStr = '<a download="' + fileName + '" id="downloadlink">Download captured data</a>';
+  $(hrefStr).prependTo($('#general_container'));  // parent is on html page
+  downloadLink = document.getElementById('downloadlink');
+  downloadLink.href = window.URL.createObjectURL(data);
+  downloadLink.style.display = 'block';
+}
+
 
 function updateNowLine() {
   if (!mayStartNowLine) {
@@ -308,90 +600,6 @@ function makeTooltip(series) {
   return tooltip;
 }
 
-function makeChart() {
-  chartProps = makeCategories();
-
-  Highcharts.setOptions({
-    global : {
-      useUTC : false
-    }
-  });
-
-  for (var appId in apps) {
-    var appSeries = makeSeriesForOneApp(appId);
-    if (appSeries.data.length !== 0) {
-      series.push(appSeries);
-      chartProps.haveData = true;
-    }
-  }
-
-  if (!chartProps.haveData) {
-    series.push(makeFakeSeries());
-  }
-
-  chart = new Highcharts.Chart({
-    chart: {
-      height: chartHeight,
-      renderTo: 'chart_container',  // parent is on html page
-      type: 'columnrange',
-      inverted: true
-    },
-    title: {
-      text: chartTitle
-    },
-
-    xAxis: {
-      min: 0,
-      max: chartProps.nCategories - 1,
-      gridLineWidth: 0,
-      plotBands: chartProps.plotBands,
-      plotLines: chartProps.plotLines,
-      categories: chartProps.groupedCategories,
-      labels: {
-        style: {
-          color: 'red'
-        }
-      }
-    },
-
-    yAxis: {
-      gridLineWidth: 0,
-      type: 'datetime',
-      title: {
-        text: null
-      },
-      labels: {
-        enabled: false
-      },
-    },
-
-    legend: {
-      enabled: false,
-    },
-
-    tooltip: {
-      style: {fontSize: '13pt', lineHeight: '20%'},
-      formatter: function() {
-        return makeTooltip(this.series);
-      }
-    },
-
-    plotOptions: {
-      columnrange: {
-        stacking: 'normal'
-      },
-      series: {
-        pointPadding: 0,
-        groupPadding: 0
-      }
-    },
-
-    series: series
-  });
-
-  addButtons();
-  processTimeline();
-}
 
 function elt(id) {
     return document.getElementById(id);
@@ -1056,209 +1264,6 @@ function processApps(inApps) {
   });
 }
 
-function getDataLoop() {
-  // capturedData and related variables are in a separate script
-  if (typeof useCapturedData === 'undefined') {
-    useCapturedData = false;
-  }
-  if (useCapturedData) {
-    var nodes = getNodesFromCapturedData();
-    var apps;
-    if (doRefresh) {
-      if (nRefresh === 0) {
-        apps = [];
-      } else {
-        apps = getAppsFromCapturedData().slice(0, nRefresh);
-      }
-      getDataOneIteration({nodes: nodes, apps: apps});
-      nRefresh++;
-      if (nRefresh % 10 === 0) {
-        addOneNode(0);  // add a node into app 0
-      }
-      if (nRefresh === 5) {
-        finishOneApp(2);  // finish the app but will start later
-      }
-      if (nRefresh === 7) {
-        restartOneApp(2);  // restart preempted job
-      }
-      if (nRefresh === 10) {
-        finishOneApp(2);  // finish the app but will start later
-      }
-      if (nRefresh === 14) {
-        restartOneApp(2);  // restart preempted job
-      }
-      // maxAppFinishTime is defined in capturedData.js
-      if (maxAppFinishTime !== 0 && new Date().getTime() > maxAppFinishTime) {
-        doRefresh = false;
-      }
-    } else {
-      nodes = getNodesFromCapturedData();
-      apps = getAppsFromCapturedData().slice(0, 6);
-      // getDataOneIteration({nodes: nodes, apps: []});  // no apps
-      getDataOneIteration({nodes: nodes, apps: apps});
-    }
-    return;
-  }
-
-  var dataLink = '/cluster/atlasData/';
-  d3.json(dataLink, function(error, data) {
-    var inApps = [];
-    var inNodes = [];
-
-    if (error !== null) {
-      console.log('failed server request.  will retry', error.statusText);
-      return;
-    }
-
-    getDataOneIteration(data);
-  });
-}
-
-function getDataOneIteration(data) {
-  // If the app doesn't have the finish time, the finish time is the uniform
-  // current time of the data fetching loop.  This current time is also used
-  // to draw the "now" line.
-  timeInCurrentLoop = new Date().getTime();
-  currentTimeUsed = false;
-
-  if (catchServerData) {
-    catchServerData = false;
-    dumpData(data);
-  }
-  $.each(data, function(key, list) {
-    if (key === 'nodes') {
-      inNodes = data.nodes;
-    } else if (key === 'apps') {
-      inApps = data.apps;
-    }
-  });
-
-  processNodes(inNodes);
-  processApps(inApps);
-
-  // update chart if already exists
-  if (chart !== null) {
-    updateChart();
-  } else {
-    makeChart();
-  }
-}
-
-function updateChart(categoriesChanged) {
-  var needRedraw = false;
-  var layoutChanged = false;
-
-  var rack, rackId;
-  if (categoriesChanged !== undefined) {
-    var bandIds = [];
-    var lineIds = [];
-    var b, l;
-
-    newProps = makeCategories();
-    layoutChanged = true;
-    needRedraw = true;
-
-    chart.setSize($('#chart_container').width(), chartHeight, false);
-
-    // must copy the band/line ids before removing.  highchart just
-    // uses MY bands and lines.  So if I loop through the bands, I'm
-    // doing removal on the dame data structure.
-    for (b in chartProps.plotBands) {
-      bandIds.push(chartProps.plotBands[b].id);
-    }
-    for (b in bandIds) {
-      chart.xAxis[0].removePlotBand(bandIds[b]);
-    }
-    for (b in newProps.plotBands) {
-      chart.xAxis[0].addPlotBand(newProps.plotBands[b]);
-    }
-    for (l in chartProps.plotLines) {
-      lineIds.push(chartProps.plotLines[l].id);
-    }
-    for (l in lineIds) {
-      chart.xAxis[0].removePlotLine(lineIds[l]);
-    }
-    for (l in newProps.plotLines) {
-      chart.xAxis[0].addPlotLine(newProps.plotLines[l]);
-    }
-
-    for (rackId in groupCollection) {  // can be rack or partition
-      rack = groupCollection[rackId];
-      if (chart.get(rack.seriesId()) !== null) {
-        chart.get(rack.seriesId()).remove(false);
-      }
-      if (chart.get(rack.seriesId('future')) !== null) {
-        chart.get(rack.seriesId('future')).remove(false);
-      }
-
-      rack.button.remove();  // remove the old buttons
-      rack.button = null;
-    }
-
-    chart.xAxis[0].setCategories(newProps.groupedCategories, false);
-    chart.xAxis[0].setExtremes(newProps.xMin, newProps.xMax);
-    newProps.haveData = chartProps.haveData;  // app data accumulate
-    chartProps = newProps;
-  }
-
-  // add rack series.
-  // If categories changed, code above should have removed old ones already.
-  for (rackId in groupCollection) {
-    rack = groupCollection[rackId];
-    if (rack.expanded) {
-      continue;
-    }
-
-    var rackSeries = makeSeriesForOneRack(rackId);
-    if (rackSeries === null) {  // rack data unchanged since last update
-      continue;
-    }
-
-    needRedraw = true;
-    if (rackSeries.data.length !== 0) {
-      chartProps.haveData = true;
-    }
-    if (chart.get(rack.seriesId()) === null) {
-      chart.addSeries(rackSeries, false);
-    } else {
-      chart.get(rack.seriesId()).setData(rackSeries.data, false);
-    }
-  }
-
-  // renew apps for uncollapsed nodes
-  for (var appId in apps) {
-    var app = apps[appId];
-    var seriesId = apps[appId].seriesId;
-    if (app.state == 'new' || app.state == 'updated' || layoutChanged) {
-      needRedraw = true;
-      var appSeries = makeSeriesForOneApp(appId);
-      if (appSeries.data.length !== 0) {
-        chartProps.haveData = true;
-      }
-      if (chart.get(seriesId) === null) {
-        chart.addSeries(appSeries, false);
-      } else {
-        chart.get(seriesId).setData(appSeries.data, false);
-      }
-    }
-  }
-
-  // leave fake series there but update it to fit the new categrories
-  if (chart.get(fakeSeriesId) !== null && layoutChanged){
-    chart.get(fakeSeriesId).setData(makeFakeSeries(), false);
-  }
-
-  if (needRedraw) {
-    chart.redraw();
-  }
-  updateNowLine();
-  if (layoutChanged) {
-    addButtons();
-  }
-
-  // this should be done after the allocation partitions is put in
-  processTimeline();
-}
 
 // =================================================================== //
 
