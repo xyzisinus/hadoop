@@ -416,6 +416,180 @@ function updateChart(categoriesChanged) {
   processTimeline();
 }
 
+///// incoming data processing /////
+
+function updateAppState(inApp, nodesOccupied, pendingAllocations, finished) {
+  var id = inApp.applicationId;
+  // app has already finished when first seen.  ignore.
+  if (!(id in apps) && finished) return;
+
+  if (id in apps && finished) {
+    apps[id].state = 'finished';
+    apps[id].serverState = 'FINISHED';
+    return;
+  }
+
+  if (!(id in apps)) {  // make new app entry
+    apps[id] = {};
+    apps[id].state = 'new';
+    apps[id].nodesOccupied = {};
+    apps[id].nodeUseHistory = {};  // preexempted nodes history
+    apps[id].seriesId = 'Atlas_app_' + id;
+    apps[id].color = null;
+  } else {
+    apps[id].state = 'unchanged';
+  }
+
+  apps[id].startTime = inApp.startTime;
+  apps[id].finishTime = (inApp.finishTime === 0) ?
+    timeInCurrentLoop : inApp.finishTime;
+  apps[id].serverState = inApp.state;
+  apps[id].nContainers = Object.keys(nodesOccupied).length;
+  apps[id].estimatedFinishTime = inApp.finishTime;
+  apps[id].pendingAllocFinishTime = 0;
+  apps[id].pendingAllocContainers = 0;
+
+  // If tooltip info exists
+  if ('tooltip_info' in inApp) {
+    for (var k in inApp.tooltip_info) {
+      apps[id][k] = inApp.tooltip_info[k];
+    }
+  }
+
+  // xxx need rework the state keeping now app's container set can add
+  // AND subtract
+  apps[id].state = 'updated';
+
+  var newList = {};
+  $.each(nodesOccupied, function(n, duration) {
+    newList[n] = [duration[0], duration[1]];
+    if (n in apps[id].nodesOccupied) {
+      // there is a record that the node has been used by the app.
+      // if the duration on record is pretty much the same duration,
+      // (with some extension in the new duration), delete the old
+      // record.  Otherwise it's the case where the app was preempted
+      // and now restarted.  Then don't delete so the duration can go
+      // nodeUseHistory
+      if (intervalsOverlap(duration, apps[id].nodesOccupied[n])) {
+        delete apps[id].nodesOccupied[n];
+      }
+    }
+  });
+
+  // leftover in app's nodesOccupied go to node use history
+  for (var n in apps[id].nodesOccupied) {
+    var duration = apps[id].nodesOccupied[n];
+    if (n in apps[id].nodeUseHistory) {
+      apps[id].nodeUseHistory[n].push([duration[0], duration[1]]);
+    } else {
+      apps[id].nodeUseHistory[n] = [[duration[0], duration[1]]];
+    }
+  }
+  apps[id].nodesOccupied = newList;
+}
+
+function processApps(inApps) {
+  $.each(inApps, function(index, inApp) {
+    var finishedApp = false;
+    var nodesOccupied = {};  // node -> [startTime, finishTime]
+    var pendingAllocations = [];
+    var finishTime = 0;
+
+    // loop through the nodes used by the app
+    for (var ranNodeIdx in inApp.ranNodes) {
+      var startTime = Number(inApp.startTime);
+      var nodeId = inApp.ranNodes[ranNodeIdx].split('.')[0];
+
+      if (inApp.state === 'FINISHED') {
+        // App is finished. We only know the app's creation time
+        // on each node if the client gets the app info when it's running.
+        // So if an app has already finished when the client is started,
+        // we simply don't show the app because the start time on individual
+        // nodes is not provided for finished apps by the server.
+        if (!(inApp.applicationId in apps)) {
+          return true;
+        }
+
+        finishTime = Number(inApp.finishTime);
+        if (finishTime === 0) {
+          finishTime = timeInCurrentLoop;
+          currentTimeUsed = true;
+          console.log('finished current time', timeInCurrentLoop);
+        }
+        finishedApp = true;
+      } else if (inApp.state === 'RUNNING') {
+        var container = inApp.containers[ranNodeIdx];
+        startTime = inApp.containers[ranNodeIdx].creationTime;
+        finishTime = timeInCurrentLoop;
+        console.log('running current time', timeInCurrentLoop);
+        currentTimeUsed = true;
+      } else {
+        console.log('invalid app state:', inApp.applicationId. inApp.state);
+        return true;
+      }
+
+      nodesOccupied[nodeId] = [startTime, finishTime];
+    }
+
+    if (useCapturedData) {
+      addPendingAllocations(inApp);  // no op if not using captured data
+    }
+
+    if ('pending_future_allocations' in inApp) {
+      pendingAllocations = inApp.pending_future_allocations;
+    }
+
+    // update app state and save the current dataset for the app
+    updateAppState(inApp, nodesOccupied, pendingAllocations, finishedApp);
+  });
+}
+
+// Nodes from the server have rack property.  So groupCollection structure
+// is also made here.
+function processNodes(inNodes) {
+  if (nodesProcessed) {
+    return;  // don't need re-process racks because they don't change
+  }
+
+  $.each(inNodes, function(index, inNode) {
+    var nodeId = inNode.nodeId.split('.')[0];
+    var rackId = inNode.rack.substr(1);
+
+      var node = {};
+      node.fullId = inNode.nodeId;
+      node.categoryIdx = -1;  // node's chart category index, -1 -> rack collapsed
+      node.data = [];  // [start, finish] pairs chronologically ordered
+      node.state = 'unchanged';  // will be updated with app data
+      nodeCollection[nodeId] = node;
+
+      // rackInfo is derived from node. a previous node may have built the rack
+      if (rackId in rackCollection) {
+        rackCollection[rackId].nodes.push(nodeId);  // add node into rackInfo
+      } else {
+        var rack = new rackInfo(rackId);
+        rackCollection[rackId] = rack;
+
+        rack.fullId = inNode.rack;
+        rack.nodes = [nodeId];
+        rack.button = null;
+        rack.categoryIdx = -1;
+        rack.expanded = true;
+      }
+  });
+
+  // racks and the nodes on each rack are sorted alphabetically
+  racks = Object.keys(rackCollection).sort();
+  for (var r in racks) {
+    rackCollection[racks[r]].nodes.sort();
+  }
+
+  groupCollection = rackCollection;
+  groups = racks;
+
+  nodesProcessed = true;
+}
+
+
 // dump data (whatever) into json format and create a download link
 // how to use: add "catchServerData = true" in a button click event
 // hanler, e.g. expand/shrink button for racks.  Then at the next
@@ -1057,50 +1231,6 @@ function buildRackUsage(inData, start, finish, value) {
   return data;
 }  // buildRackUsage()
 
-// Nodes from the server have rack property.  So groupCollection structure
-// is also made here.
-function processNodes(inNodes) {
-  if (nodesProcessed) {
-    return;  // don't need re-process racks because they don't change
-  }
-
-  $.each(inNodes, function(index, inNode) {
-    var nodeId = inNode.nodeId.split('.')[0];
-    var rackId = inNode.rack.substr(1);
-
-      var node = {};
-      node.fullId = inNode.nodeId;
-      node.categoryIdx = -1;  // node's chart category index, -1 -> rack collapsed
-      node.data = [];  // [start, finish] pairs chronologically ordered
-      node.state = 'unchanged';  // will be updated with app data
-      nodeCollection[nodeId] = node;
-
-      // rackInfo is derived from node. a previous node may have built the rack
-      if (rackId in rackCollection) {
-        rackCollection[rackId].nodes.push(nodeId);  // add node into rackInfo
-      } else {
-        var rack = new rackInfo(rackId);
-        rackCollection[rackId] = rack;
-
-        rack.fullId = inNode.rack;
-        rack.nodes = [nodeId];
-        rack.button = null;
-        rack.categoryIdx = -1;
-        rack.expanded = true;
-      }
-  });
-
-  // racks and the nodes on each rack are sorted alphabetically
-  racks = Object.keys(rackCollection).sort();
-  for (var r in racks) {
-    rackCollection[racks[r]].nodes.sort();
-  }
-
-  groupCollection = rackCollection;
-  groups = racks;
-
-  nodesProcessed = true;
-}
 
 function makeSeriesForOneApp(appId) {
   var dataSet = [];
@@ -1135,133 +1265,6 @@ function makeSeriesForOneApp(appId) {
 
   // no category touched by app. it can happen with rack collapse
   return appSeries;  // data can be emtpy, like []
-}
-
-var dumpedServerDataOnceInUpdateAppState = false;
-function updateAppState(inApp, nodesOccupied, pendingAllocations, finished) {
-  var id = inApp.applicationId;
-  // app has already finished when first seen.  ignore.
-  if (!(id in apps) && finished) return;
-
-  if (id in apps && finished) {
-    apps[id].state = 'finished';
-    apps[id].serverState = 'FINISHED';
-    return;
-  }
-
-  if (!(id in apps)) {  // make new app entry
-    apps[id] = {};
-    apps[id].state = 'new';
-    apps[id].nodesOccupied = {};
-    apps[id].nodeUseHistory = {};  // preexempted nodes history
-    apps[id].seriesId = 'Atlas_app_' + id;
-    apps[id].color = null;
-  } else {
-    apps[id].state = 'unchanged';
-  }
-
-  apps[id].startTime = inApp.startTime;
-  apps[id].finishTime = (inApp.finishTime === 0) ?
-    timeInCurrentLoop : inApp.finishTime;
-  apps[id].serverState = inApp.state;
-  apps[id].nContainers = Object.keys(nodesOccupied).length;
-  apps[id].estimatedFinishTime = inApp.finishTime;
-  apps[id].pendingAllocFinishTime = 0;
-  apps[id].pendingAllocContainers = 0;
-
-  // If tooltip info exists
-  if ('tooltip_info' in inApp) {
-    for (var k in inApp.tooltip_info) {
-      apps[id][k] = inApp.tooltip_info[k];
-    }
-  }
-
-  // xxx need rework the state keeping now app's container set can add
-  // AND subtract
-  apps[id].state = 'updated';
-
-  var newList = {};
-  $.each(nodesOccupied, function(n, duration) {
-    newList[n] = [duration[0], duration[1]];
-    if (n in apps[id].nodesOccupied) {
-      // there is a record that the node has been used by the app.
-      // if the duration on record is pretty much the same duration,
-      // (with some extension in the new duration), delete the old
-      // record.  Otherwise it's the case where the app was preempted
-      // and now restarted.  Then don't delete so the duration can go
-      // nodeUseHistory
-      if (intervalsOverlap(duration, apps[id].nodesOccupied[n])) {
-        delete apps[id].nodesOccupied[n];
-      }
-    }
-  });
-
-  // leftover in app's nodesOccupied go to node use history
-  for (var n in apps[id].nodesOccupied) {
-    var duration = apps[id].nodesOccupied[n];
-    if (n in apps[id].nodeUseHistory) {
-      apps[id].nodeUseHistory[n].push([duration[0], duration[1]]);
-    } else {
-      apps[id].nodeUseHistory[n] = [[duration[0], duration[1]]];
-    }
-  }
-  apps[id].nodesOccupied = newList;
-}
-
-function processApps(inApps) {
-  $.each(inApps, function(index, inApp) {
-    var finishedApp = false;
-    var nodesOccupied = {};  // node -> [startTime, finishTime]
-    var pendingAllocations = [];
-    var finishTime = 0;
-
-    // loop through the nodes used by the app
-    for (var ranNodeIdx in inApp.ranNodes) {
-      var startTime = Number(inApp.startTime);
-      var nodeId = inApp.ranNodes[ranNodeIdx].split('.')[0];
-
-      if (inApp.state === 'FINISHED') {
-        // App is finished. We only know the app's creation time
-        // on each node if the client gets the app info when it's running.
-        // So if an app has already finished when the client is started,
-        // we simply don't show the app because the start time on individual
-        // nodes is not provided for finished apps by the server.
-        if (!(inApp.applicationId in apps)) {
-          return true;
-        }
-
-        finishTime = Number(inApp.finishTime);
-        if (finishTime === 0) {
-          finishTime = timeInCurrentLoop;
-          currentTimeUsed = true;
-          console.log('finished current time', timeInCurrentLoop);
-        }
-        finishedApp = true;
-      } else if (inApp.state === 'RUNNING') {
-        var container = inApp.containers[ranNodeIdx];
-        startTime = inApp.containers[ranNodeIdx].creationTime;
-        finishTime = timeInCurrentLoop;
-        console.log('running current time', timeInCurrentLoop);
-        currentTimeUsed = true;
-      } else {
-        console.log('invalid app state:', inApp.applicationId. inApp.state);
-        return true;
-      }
-
-      nodesOccupied[nodeId] = [startTime, finishTime];
-    }
-
-    if (useCapturedData) {
-      addPendingAllocations(inApp);  // no op if not using captured data
-    }
-
-    if ('pending_future_allocations' in inApp) {
-      pendingAllocations = inApp.pending_future_allocations;
-    }
-
-    // update app state and save the current dataset for the app
-    updateAppState(inApp, nodesOccupied, pendingAllocations, finishedApp);
-  });
 }
 
 
