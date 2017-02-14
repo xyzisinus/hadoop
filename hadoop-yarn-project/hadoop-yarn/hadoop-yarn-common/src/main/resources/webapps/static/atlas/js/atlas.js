@@ -389,7 +389,6 @@ function makeChart() {
     series: series
   });
 
-  recordAppSeriesColor();
   addButtons();
   processTimeline();
 }
@@ -436,10 +435,6 @@ function positionTimeline() {
   content.height(chartHeight + 130);
 }
 
-function onload() {
-  positionTimeline();
-}
-
 function createTimeline() {
   // create container for timeline
   timelineBox = $('<div>').appendTo($('#general_container'));
@@ -447,7 +442,7 @@ function createTimeline() {
   timelineBox.css('background', 'rgba(255, 255, 255, 0.9)');
   timelineBox.css('font-weight', 'bold');
 
-  // increase the height of parent div for timeline
+  // increase the height of parent div to contain timeline
   var content = $('#general_container');
   var height = content.height() + 100;
   content.height(height);
@@ -457,7 +452,7 @@ function createTimeline() {
     positionTimeline();
   });
 
-  // add hood for click (select) and double click (go to default)
+  // add hook for click (select) and double click (go to default)
   var firstClickOnTimeline = true;
   timelineBox.on('click', function(e) {
     // only show help message on the first click
@@ -535,7 +530,7 @@ function createTimeline() {
   });
 }
 
-// Called after chart creation and update
+// Called after chart creation/update
 function processTimeline() {
   if (timeline === null && chartProps.haveData) {
     createTimeline()
@@ -690,33 +685,8 @@ function makeSeriesForOneRack(rackId) {
   return makeCollapsedGroupSeries(rack.kind(), rack, data);
 }
 
-function duplicateUsageData(a) {
-  var dup = [];
-  for (var i in a) {
-    var oneElement = Object.assign({}, a[i]);
-    dup.push(oneElement);
-  }
-  return dup;
-}
-
-// For testing purpose
-function shortTime(t) {
-  var s = t.toString();
-  return s.substring(6, 10);
-}
-
 function intervalsOverlap(d1, d2) {
   return (d1[0] < d2[1] && d2[0] < d1[1]) ? true : false;
-}
-
-function convertHex(hex,opacity){
-    hex = hex.replace('#','');
-    var r = parseInt(hex.substring(0,2), 16);
-    var g = parseInt(hex.substring(2,4), 16);
-    var b = parseInt(hex.substring(4,6), 16);
-
-    var result = 'rgba('+r+','+g+','+b+','+opacity/100+')';
-    return result;
 }
 
 function buildRackUsage(inData, start, finish, value) {
@@ -922,23 +892,6 @@ function processNodes(inNodes) {
   groups = racks;
 
   nodesProcessed = true;
-}
-
-function destroyChartEtc() {
-  if (plotLineInterval !== null) {
-    window.clearInterval(plotLineInterval);
-    plotLineInterval = null;
-  }
-  series = [];
-  chart.destroy();
-  chart = null;
-  if (timeline !== null) {
-    timeline.destroy();
-    timeline = null;
-  }
-  if (timelineBox !== null) {
-    timelineBox.remove();
-  }
 }
 
 function makeSeriesForOneApp(appId) {
@@ -1191,18 +1144,6 @@ function getDataOneIteration(data) {
   }
 }
 
-function recordAppSeriesColor() {
-  // all app has a seris even if it's all [null, null], to get its color
-  // allocated by highchart. the color is used for the pending partition
-  // series
-  for (var s in chart.series) {
-    var appId = chart.series[s].name;
-    if (chart.series[s].options.id.startsWith(appSeriesPrefix)) {
-      apps[appId].color = chart.series[s].color;
-    }
-  }
-}
-
 function updateChart(categoriesChanged) {
   var needRedraw = false;
   var layoutChanged = false;
@@ -1315,12 +1256,8 @@ function updateChart(categoriesChanged) {
     addButtons();
   }
 
-  recordAppSeriesColor();
-
   // this should be done after the allocation partitions is put in
   processTimeline();
-
-  // console.log(chart.series);
 }
 
 // =================================================================== //
