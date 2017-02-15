@@ -474,6 +474,7 @@ function updateAppState(inApp, nodesOccupied, pendingAllocations, finished) {
       // record.  Otherwise it's the case where the app was preempted
       // and now restarted.  Then don't delete so the duration can go
       // nodeUseHistory
+      // ppp
       if (intervalsOverlap(duration, apps[id].nodesOccupied[n])) {
         delete apps[id].nodesOccupied[n];
       }
@@ -846,36 +847,7 @@ function makeSeriesForOneApp(appId) {
   return appSeries;  // data can be emtpy, like []
 }
 
-// dump data (whatever) into json format and create a download link
-// how to use: add "catchServerData = true" in a button click event
-// hanler, e.g. expand/shrink button for racks.  Then at the next
-// data loop, the data will be dumped ONCE.
-var downloadLink = null;
-function dumpData(inData) {
-  var date = new Date();
-  var hours = date.getHours();
-  var minutes = "0" + date.getMinutes();
-  var seconds = "0" + date.getSeconds();
-  var formattedTime = hours + ':' + minutes.substr(-2) + ':' + seconds.substr(-2);
-  var header = formattedTime + ': ' + errorMsgToDump;
-  errorMsgToDump = '';
-  var text = header + '\n' + JSON.stringify(inData, null, 2);
-  var data = new Blob([text], {type: 'text/plain'});
-  var fileName = 'capturedData-' + formattedTime + '.txt';
-
-  if (downloadLink !== null) {
-    // destroy old link and data
-    window.URL.revokeObjectURL(downloadLink.href);
-    downloadLink.parentNode.removeChild(downloadLink);
-  }
-
-  var hrefStr = '<a download="' + fileName + '" id="downloadlink">Download captured data</a>';
-  $(hrefStr).prependTo($('#general_container'));  // parent is on html page
-  downloadLink = document.getElementById('downloadlink');
-  downloadLink.href = window.URL.createObjectURL(data);
-  downloadLink.style.display = 'block';
-}
-
+///// chart formatting ops (categories, tooltips, etc) /////
 
 function updateNowLine() {
   if (!mayStartNowLine) {
@@ -890,6 +862,76 @@ function updateNowLine() {
     color: 'red',
     zIndex: 50,
     id: 'current_time'
+  });
+}
+
+function addButtons() {
+  var nodeLabelX = 0;  // x for expand button, align with node label
+  var x, y;
+
+  // xxx Since there is no api to find the labels, I use a dirty way.
+  // All labels are children of an element of xaxis-labels class.
+
+  // The first loop is to find the x of a node label.  Needed to
+  // place expand buttons which align with node labels.
+  $('.highcharts-xaxis-labels').children().each(function(i, label) {
+    if (label.textContent in nodeCollection) {  // label is rack
+      nodeLabelX = $(label).offset().left;
+      return false;  // done with loop once a noce label is seen
+    }
+  });
+
+  $('.highcharts-xaxis-labels').children().each(function(i, label) {
+    if (label.textContent in groupCollection) {  // only care about rack label
+      var rackId = label.textContent;
+      var rack = groupCollection[rackId];
+      if (rack.expanded) {
+        var collapseButton = $('<input type="button" value="-" />');
+        rack.button = collapseButton;
+        collapseButton.appendTo($('body'));
+        // position the button below rack name and center it
+        var labelW = $(label)[0].getBoundingClientRect().width;
+        var buttonW = collapseButton[0].getBoundingClientRect().width;
+        x = $(label).offset().left + (labelW - buttonW) / 2;
+        y = $(label).offset().top + 20;
+        collapseButton.css({left: x, top: y, position: 'absolute'});
+        collapseButton.on('click',function() {
+          // catchServerData = true;  // side effect for debugging
+          rack.expanded = false;
+          justResetCollapseAllButton = true;
+          collapseAllButton.switchButton({checked: false});
+          justResetCollapseAllButton = false;
+          updateChart('categoriesChanged');
+        });
+      } else {  // rack is collapsed
+        y = $(label).offset().top + 20;
+        x = nodeLabelX;
+        // when all groups are collapsed, nodeLabelX is zero.
+        // then place the button to the right of rack label
+        if (x === 0) {
+          x = $(label).offset().left + 15;
+        }
+        var expandButton = $('<input type="button" value="+" />');
+        rack.button = expandButton;
+        expandButton.appendTo($('body'));
+        expandButton.css({left: x, top: y, position: 'absolute'});
+        expandButton.on('click',function() {
+          // catchServerData = true;  // side effect for debugging
+          rack.expanded = true;
+          justResetCollapseAllButton = true;
+          collapseAllButton.switchButton({checked: false});
+          justResetCollapseAllButton = false;
+          updateChart('categoriesChanged');
+        });
+      }
+      // buttons on hadoop pages have no border.  add one
+      rack.button.css({"border-color": "black",
+                       "border-radius": "5px",
+                       "border-width":"1px",
+                       "border-style":"solid"});
+
+
+    }
   });
 }
 
@@ -1030,47 +1072,36 @@ function makeTooltip(series) {
   return tooltip;
 }
 
+///// timeline ops /////
 
-function elt(id) {
-    return document.getElementById(id);
-}
+// Called after chart creation/update
+function processTimeline() {
+  if (timeline === null && chartProps.haveData) {
+    createTimeline()
+  }
 
-function positionTimeline() {
-  if (elt('timelinebox') === null || elt('highcharts-0') === null) {
+  if (timeline === null) {  // still have no timeline
     return;
   }
 
-  var marginLeft = chart.plotBox.x;
-  timelineBox.css('left', marginLeft + $('#chart_container').offset().left);
-  timelineBox.css('position', 'fixed');
-  var width = $(chart.container).width() - chart.marginRight - marginLeft;
-  timelineBox.width(width);
+  var min = chart.yAxis[0].getExtremes().min;
+  var max = chart.yAxis[0].getExtremes().max;
+  timeline.setWindow(min, max);
 
-  var $chart = elt('highcharts-0');
-  var $fixed = elt('timelinebox');
-  var chartBottom = $chart.getBoundingClientRect().bottom;
+  positionTimeline()
 
-  var HEIGHT = $('#highcharts-0').height();
-  var FIXED_HEIGHT = $('#timelinebox').height();
+  mayStartNowLine = true;
+  updateNowLine();
+}
 
-  // timeline box has no height before it's actualy placed.  so give it one.
-  if (FIXED_HEIGHT === 0) {
-    FIXED_HEIGHT = 90;
-  }
+function onSelect(info) {
+  if (!info.byUser) return;
+  chart.yAxis[0].setExtremes(info.start, info.end);
+  // chart.yAxis[0].setExtremes(null, null);  // resume auto setting min/max
+}
 
-  var marginLeft = chart.plotBox.x;
-  timelineBox.css('left', marginLeft + $('#chart_container').offset().left);
-  if (chartBottom + 30 < window.innerHeight) {
-    $fixed.style.top = chartBottom + 'px';
-  } else {
-    $fixed.style.top = (window.innerHeight - FIXED_HEIGHT - 10) + 'px';
-  }
-
-  // the window can be too 'high' after rack collapse that the user see
-  // a blank window (the interesting part is invisible as the upper portion).
-  // thrink the size of container so that the window shrinks. too.
-  var content = $('#general_container');
-  content.height(chartHeight + 130);
+function onDoubleClick(info) {
+  chart.yAxis[0].setExtremes(null, null);  // resume auto setting min/max
 }
 
 function createTimeline() {
@@ -1168,111 +1199,79 @@ function createTimeline() {
   });
 }
 
-// Called after chart creation/update
-function processTimeline() {
-  if (timeline === null && chartProps.haveData) {
-    createTimeline()
-  }
+function elt(id) {
+    return document.getElementById(id);
+}
 
-  if (timeline === null) {  // still have no timeline
+function positionTimeline() {
+  if (elt('timelinebox') === null || elt('highcharts-0') === null) {
     return;
   }
 
-  var min = chart.yAxis[0].getExtremes().min;
-  var max = chart.yAxis[0].getExtremes().max;
-  timeline.setWindow(min, max);
+  var marginLeft = chart.plotBox.x;
+  timelineBox.css('left', marginLeft + $('#chart_container').offset().left);
+  timelineBox.css('position', 'fixed');
+  var width = $(chart.container).width() - chart.marginRight - marginLeft;
+  timelineBox.width(width);
 
-  positionTimeline()
+  var $chart = elt('highcharts-0');
+  var $fixed = elt('timelinebox');
+  var chartBottom = $chart.getBoundingClientRect().bottom;
 
-  mayStartNowLine = true;
-  updateNowLine();
+  var HEIGHT = $('#highcharts-0').height();
+  var FIXED_HEIGHT = $('#timelinebox').height();
+
+  // timeline box has no height before it's actualy placed.  so give it one.
+  if (FIXED_HEIGHT === 0) {
+    FIXED_HEIGHT = 90;
+  }
+
+  var marginLeft = chart.plotBox.x;
+  timelineBox.css('left', marginLeft + $('#chart_container').offset().left);
+  if (chartBottom + 30 < window.innerHeight) {
+    $fixed.style.top = chartBottom + 'px';
+  } else {
+    $fixed.style.top = (window.innerHeight - FIXED_HEIGHT - 10) + 'px';
+  }
+
+  // the window can be too 'high' after rack collapse that the user see
+  // a blank window (the interesting part is invisible as the upper portion).
+  // thrink the size of container so that the window shrinks. too.
+  var content = $('#general_container');
+  content.height(chartHeight + 130);
 }
 
-function onSelect(info) {
-  if (!info.byUser) return;
-  chart.yAxis[0].setExtremes(info.start, info.end);
-  // chart.yAxis[0].setExtremes(null, null);  // resume auto setting min/max
+///// helper functions /////
+
+// dump data (whatever) into json format and create a download link
+// how to use: add "catchServerData = true" in a button click event
+// hanler, e.g. expand/shrink button for racks.  Then at the next
+// data loop, the data will be dumped ONCE.
+var downloadLink = null;
+function dumpData(inData) {
+  var date = new Date();
+  var hours = date.getHours();
+  var minutes = "0" + date.getMinutes();
+  var seconds = "0" + date.getSeconds();
+  var formattedTime = hours + ':' + minutes.substr(-2) + ':' + seconds.substr(-2);
+  var header = formattedTime + ': ' + errorMsgToDump;
+  errorMsgToDump = '';
+  var text = header + '\n' + JSON.stringify(inData, null, 2);
+  var data = new Blob([text], {type: 'text/plain'});
+  var fileName = 'capturedData-' + formattedTime + '.txt';
+
+  if (downloadLink !== null) {
+    // destroy old link and data
+    window.URL.revokeObjectURL(downloadLink.href);
+    downloadLink.parentNode.removeChild(downloadLink);
+  }
+
+  var hrefStr = '<a download="' + fileName + '" id="downloadlink">Download captured data</a>';
+  $(hrefStr).prependTo($('#general_container'));  // parent is on html page
+  downloadLink = document.getElementById('downloadlink');
+  downloadLink.href = window.URL.createObjectURL(data);
+  downloadLink.style.display = 'block';
 }
-
-function onDoubleClick(info) {
-  chart.yAxis[0].setExtremes(null, null);  // resume auto setting min/max
-}
-
-function addButtons() {
-  var nodeLabelX = 0;  // x for expand button, align with node label
-  var x, y;
-
-  // xxx Since there is no api to find the labels, I use a dirty way.
-  // All labels are children of an element of xaxis-labels class.
-
-  // The first loop is to find the x of a node label.  Needed to
-  // place expand buttons which align with node labels.
-  $('.highcharts-xaxis-labels').children().each(function(i, label) {
-    if (label.textContent in nodeCollection) {  // label is rack
-      nodeLabelX = $(label).offset().left;
-      return false;  // done with loop once a noce label is seen
-    }
-  });
-
-  $('.highcharts-xaxis-labels').children().each(function(i, label) {
-    if (label.textContent in groupCollection) {  // only care about rack label
-      var rackId = label.textContent;
-      var rack = groupCollection[rackId];
-      if (rack.expanded) {
-        var collapseButton = $('<input type="button" value="-" />');
-        rack.button = collapseButton;
-        collapseButton.appendTo($('body'));
-        // position the button below rack name and center it
-        var labelW = $(label)[0].getBoundingClientRect().width;
-        var buttonW = collapseButton[0].getBoundingClientRect().width;
-        x = $(label).offset().left + (labelW - buttonW) / 2;
-        y = $(label).offset().top + 20;
-        collapseButton.css({left: x, top: y, position: 'absolute'});
-        collapseButton.on('click',function() {
-          // catchServerData = true;  // side effect for debugging
-          rack.expanded = false;
-          justResetCollapseAllButton = true;
-          collapseAllButton.switchButton({checked: false});
-          justResetCollapseAllButton = false;
-          updateChart('categoriesChanged');
-        });
-      } else {  // rack is collapsed
-        y = $(label).offset().top + 20;
-        x = nodeLabelX;
-        // when all groups are collapsed, nodeLabelX is zero.
-        // then place the button to the right of rack label
-        if (x === 0) {
-          x = $(label).offset().left + 15;
-        }
-        var expandButton = $('<input type="button" value="+" />');
-        rack.button = expandButton;
-        expandButton.appendTo($('body'));
-        expandButton.css({left: x, top: y, position: 'absolute'});
-        expandButton.on('click',function() {
-          // catchServerData = true;  // side effect for debugging
-          rack.expanded = true;
-          justResetCollapseAllButton = true;
-          collapseAllButton.switchButton({checked: false});
-          justResetCollapseAllButton = false;
-          updateChart('categoriesChanged');
-        });
-      }
-      // buttons on hadoop pages have no border.  add one
-      rack.button.css({"border-color": "black",
-                       "border-radius": "5px",
-                       "border-width":"1px",
-                       "border-style":"solid"});
-
-
-    }
-  });
-}
-
-
-
-// =================================================================== //
-
-// Helper funtions to be moved to a less changed file
 
 function intervalToHms(d) {
   d = Number(d / 1000);
