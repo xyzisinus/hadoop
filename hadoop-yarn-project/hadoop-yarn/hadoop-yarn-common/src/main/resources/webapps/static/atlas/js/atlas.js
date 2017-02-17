@@ -16,40 +16,23 @@
 * limitations under the License.
 */
 
-var debug = false;
-var useFakeData = false;
-var doRefresh = true;
-var catchServerData = false;
-var errorMsgToDump = '';
-// "counter" is used like console.log('msg', counter++) make sure we see
-// a new msg when it pops up.  The web console likes to lump the same msg
-// together and give it a total count.  We don't want it sometimes.
-var counter = 0;
-var mayStartNowLine = false;
-
-var currentTimeUsed = false;
-var timeInCurrentLoop = null;
-
-var chartProps = {}; // plotBands/Lines, groupedCategories, nCategories, etc
 var chart = null;
-var timelineBox = null;
-var timeline = null;
-var plotLineInterval = null;
-var series = [];
-var nodesProcessed = false;
 var chartTitle = null;
+var chartProps = {}; // plotBands/Lines, groupedCategories, nCategories, etc
 var chartHeight = 0;
 var windowChartWidthDiff = 0;
 
-var nodeCollection = {};  // node id -> app usage, state, categoriesIdx, etc
+// apps are indexed by application id.
+// the structure maintains the state of the apps across refresh.
+// app's state: new, updated, unchanged (since last refresh)
+// an app has an index to the series array for the chart
+var apps = {};
+var series = [];
+
 var groupCollection = null;
 var groups = null;  // sorted racks or partitions
-var allExpanded = true;  // reflect the collapse/expand all button
-var collapseAllButton = null;
-var justResetCollapseAllButton = false;  // reset button without any action
-
-var appSeriesPrefix = 'Atlas_app_';
-
+var nodesProcessed = false;
+var nodeCollection = {};  // node id -> app usage, state, categoriesIdx, etc
 var rackCollection = {};  // rack id -> nodes, expanding state, etc
 var racks = [];  // sorted short rack id
 function rackInfo(rackId) {
@@ -65,70 +48,66 @@ rackInfo.prototype.seriesColor = function() {
   return 'rgba(255, 165, 0, 0.3)';
 };
 
-var minute = 1000 * 60;
+var appSeriesPrefix = 'Atlas_app_';
 var fakeSeriesId = 'atlas_fake_series';
 
-// apps are indexed by application id.
-// the structure maintains the state of the apps across refresh.
-// app's state: new, updated, unchanged (since last refresh)
-// an app has an index to the series array for the chart
-var apps = {};
+// "now line" related
+var mayStartNowLine = false;
+var currentTimeUsed = false;
+var timeInCurrentLoop = null;
+
+// timeline related
+var timelineBox = null;
+var timeline = null;
+
+// "collapse all racks" button
+var allExpanded = true;  // reflect the collapse/expand all button
+var collapseAllButton = null;
+var justResetCollapseAllButton = false;  // reset button without any action
+
+// variables for debugging
+var catchServerData = false;
+var errorMsgToDump = '';
+var callServerOnlyOnce = false;  // avoid too much console output when debugging
 
 ///// top level functions /////
 
 function atlasPageEntryPoint() {
   document.title = 'Application Atlas';  // title for browser tab
 
-  collapseAllButton = $('<input id="collapseAllButton" type="checkbox" value="0">');
-  collapseAllButton.appendTo($('#collapseAll'));  // parent is on html page
-  $('#collapseAllButton').switchButton({
-    width: 35,
-    height: 22,
-    button_width: 26,
-    on_label: 'all',
-    off_label: 'none'
-  }).change(function() {
-    allExpanded = !this.checked;
-    if (justResetCollapseAllButton) {
-      return;
-    }
-    for (var g in groupCollection) {
-      groupCollection[g].expanded = !this.checked;
-    }
-    updateChart('categoriesChanged');
-  });
-
-  // chart will not shrink because it's in a table cell in yarn.
-  // find the size diff between window and container.  when window
-  // resizes, resize the chart using then window size minus diff.
+  // When the window width changes, chart's width will not change automatically,
+  // because it's in a table cell in yarn.
+  // We need to find the size diff between window and container, and
+  // resize the chart using the new  window size minus diff.
   windowChartWidthDiff = window.innerWidth - $('#chart_container').width();
 
   $(window).resize(function() {
     if (chart !== null) {
       chart.setSize(window.innerWidth - windowChartWidthDiff, chartHeight, false);
+      positionTimeline();
     }
-    positionTimeline();
   });
 
-  getDataLoop();
+  // setInterval first waits for the interval, then executes the code inside.
+  // To make the data appear faster, run one interation outside first.
+  getDataFromServer();
+
+  if (callServerOnlyOnce) {
+    return;
+  }
 
   var counter = 0;
   setInterval(function () {
-    if (doRefresh) {
-      if (counter++ % 10 === 0) {
-        console.log('refresh', counter);  // don't print too many 'refresh'
-      }
-      if (counter % 2 === 0) {  // "now" line is updated twice as frequently
-        getDataLoop();
-      }
-    } else {
-      // console.log('no refresh');
+    if (counter++ % 10 === 0) {
+      console.log('refresh', counter);  // don't print too many 'refresh'
     }
+    getDataFromServer();
   }, 1000 * 3);
 }
 
-function getDataLoop() {
-  // capturedData and related variables are in a separate script
+function getDataFromServer() {
+  // capturedData and related variables are in a separate script that
+  // generates data for a test run
   if (typeof useCapturedData === 'undefined') {
     useCapturedData = false;
   }
@@ -165,8 +144,8 @@ function getDataLoop() {
     } else {
       nodes = getNodesFromCapturedData();
       apps = getAppsFromCapturedData().slice(0, 6);
-      // getDataOneIteration({nodes: nodes, apps: []});  // no apps
-      getDataOneIteration({nodes: nodes, apps: apps});
+      // processData({nodes: nodes, apps: []});  // no apps
+      processData({nodes: nodes, apps: apps});
     }
     return;
   }
@@ -181,11 +160,11 @@ function getDataLoop() {
       return;
     }
 
-    getDataOneIteration(data);
+    processData(data);
   });
 }
 
-function getDataOneIteration(data) {
+function processData(data) {
   // If the app doesn't have the finish time, the finish time is the uniform
   // current time of the data fetching loop.  This current time is also used
   // to draw the "now" line.
@@ -296,7 +275,7 @@ function makeChart() {
     series: series
   });
 
-  addButtons();
+  addRackButtons();
   processTimeline();
 }
 
@@ -409,7 +388,7 @@ function updateChart(categoriesChanged) {
   }
   updateNowLine();
   if (layoutChanged) {
-    addButtons();
+    addRackButtons();
   }
 
   // this should be done after the allocation partitions is put in
@@ -438,7 +417,7 @@ function updateAppState(inApp, nodesOccupied, pendingAllocations, finished) {
     apps[id].state = 'new';
     apps[id].nodesOccupied = {};
     apps[id].nodeUseHistory = {};  // preexempted nodes history
-    apps[id].seriesId = 'Atlas_app_' + id;
+    apps[id].seriesId = appSeriesPrefix + id;
     apps[id].color = null;
   } else {
     apps[id].state = 'unchanged';
@@ -526,7 +505,7 @@ function processApps(inApps) {
         var container = inApp.containers[ranNodeIdx];
         startTime = inApp.containers[ranNodeIdx].creationTime;
         finishTime = timeInCurrentLoop;
-        console.log('running current time', timeInCurrentLoop);
+        // console.log('running current time', timeInCurrentLoop);
         currentTimeUsed = true;
       } else {
         console.log('invalid app state:', inApp.applicationId. inApp.state);
@@ -865,7 +844,29 @@ function updateNowLine() {
   });
 }
 
-function addButtons() {
+function addCollapseAllButton() {
+  // container div is on the html page sent by yarn
+  collapseAllButton = $('<input id="collapseAllButton" type="checkbox" value="0">');
+  collapseAllButton.appendTo($('#collapseAll'));
+  $('#collapseAllButton').switchButton({
+    width: 35,
+    height: 22,
+    button_width: 26,
+    on_label: 'all',
+    off_label: 'none'
+  }).change(function() {
+    allExpanded = !this.checked;
+    if (justResetCollapseAllButton) {
+      return;
+    }
+    for (var g in groupCollection) {
+      groupCollection[g].expanded = !this.checked;
+    }
+    updateChart('categoriesChanged');
+  });
+}
+
+function addRackButtons() {
   var nodeLabelX = 0;  // x for expand button, align with node label
   var x, y;
 
@@ -1242,6 +1243,8 @@ function positionTimeline() {
 }
 
 ///// helper functions /////
+
+var minute = 1000 * 60;
 
 // dump data (whatever) into json format and create a download link
 // how to use: add "catchServerData = true" in a button click event
