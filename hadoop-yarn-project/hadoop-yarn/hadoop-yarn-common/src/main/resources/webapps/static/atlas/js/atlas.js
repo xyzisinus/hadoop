@@ -68,31 +68,20 @@ var justResetCollapseAllButton = false;  // reset button without any action
 // variables for debugging
 var catchServerData = false;
 var errorMsgToDump = '';
-var callServerOnlyOnce = false;  // avoid too much console output when debugging
+var callServerOnlyOnce = false;
 
 ///// top level functions /////
 
 function atlasPageEntryPoint() {
   document.title = 'Application Atlas';  // title for browser tab
 
-  // When the window width changes, chart's width will not change automatically,
-  // because it's in a table cell in yarn.
-  // We need to find the size diff between window and container, and
-  // resize the chart using the new  window size minus diff.
-  windowChartWidthDiff = window.innerWidth - $('#chart_container').width();
-
-  $(window).resize(function() {
-    if (chart !== null) {
-      chart.setSize(window.innerWidth - windowChartWidthDiff, chartHeight, false);
-      positionTimeline();
-    }
-  });
-
   // setInterval first waits for the interval, then executes the code inside.
   // To make the data appear faster, run one interation outside first.
   getDataFromServer();
 
   if (callServerOnlyOnce) {
+    // when debugging, we don't want to see repeated error msgs from the
+    // same bug.  so just stop calling server.
     return;
   }
 
@@ -106,55 +95,15 @@ function atlasPageEntryPoint() {
 }
 
 function getDataFromServer() {
-  // capturedData and related variables are in a separate script that
-  // generates data for a test run
-  if (typeof useCapturedData === 'undefined') {
-    useCapturedData = false;
-  }
-  if (useCapturedData) {
-    var nodes = getNodesFromCapturedData();
-    var apps;
-    if (doRefresh) {
-      if (nRefresh === 0) {
-        apps = [];
-      } else {
-        apps = getAppsFromCapturedData().slice(0, nRefresh);
-      }
-      getDataOneIteration({nodes: nodes, apps: apps});
-      nRefresh++;
-      if (nRefresh % 10 === 0) {
-        addOneNode(0);  // add a node into app 0
-      }
-      if (nRefresh === 5) {
-        finishOneApp(2);  // finish the app but will start later
-      }
-      if (nRefresh === 7) {
-        restartOneApp(2);  // restart preempted job
-      }
-      if (nRefresh === 10) {
-        finishOneApp(2);  // finish the app but will start later
-      }
-      if (nRefresh === 14) {
-        restartOneApp(2);  // restart preempted job
-      }
-      // maxAppFinishTime is defined in capturedData.js
-      if (maxAppFinishTime !== 0 && new Date().getTime() > maxAppFinishTime) {
-        doRefresh = false;
-      }
-    } else {
-      nodes = getNodesFromCapturedData();
-      apps = getAppsFromCapturedData().slice(0, 6);
-      // processData({nodes: nodes, apps: []});  // no apps
-      processData({nodes: nodes, apps: apps});
-    }
+  // if the html page includes script capturedData, getFakeData() function
+  // is defined and callable for faked testing data.
+  if (typeof getFakeData !== 'undefined') {
+    processData(getFakeData(callServerOnlyOnce));
     return;
   }
 
   var dataLink = '/cluster/atlasData/';
   d3.json(dataLink, function(error, data) {
-    var inApps = [];
-    var inNodes = [];
-
     if (error !== null) {
       console.log('failed server request.  will retry', error.statusText);
       return;
@@ -165,6 +114,9 @@ function getDataFromServer() {
 }
 
 function processData(data) {
+  var inApps = [];
+  var inNodes = [];
+
   // If the app doesn't have the finish time, the finish time is the uniform
   // current time of the data fetching loop.  This current time is also used
   // to draw the "now" line.
@@ -195,6 +147,21 @@ function processData(data) {
 }
 
 function makeChart() {
+  addCollapseAllButton();
+
+  // When the window width changes, chart's width will not change automatically,
+  // because it's in a table cell in yarn's html page.
+  // We need to find the size diff between window and container, and
+  // resize the chart using the new  window size minus diff.
+  windowChartWidthDiff = window.innerWidth - $('#chart_container').width();
+
+  $(window).resize(function() {
+    if (chart !== null) {
+      chart.setSize(window.innerWidth - windowChartWidthDiff, chartHeight, false);
+      positionTimeline();
+    }
+  });
+
   chartProps = makeCategories();
 
   Highcharts.setOptions({
@@ -515,9 +482,12 @@ function processApps(inApps) {
       nodesOccupied[nodeId] = [startTime, finishTime];
     }
 
+    // ppp
+    /*
     if (useCapturedData) {
       addPendingAllocations(inApp);  // no op if not using captured data
     }
+    */
 
     if ('pending_future_allocations' in inApp) {
       pendingAllocations = inApp.pending_future_allocations;

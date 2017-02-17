@@ -63,6 +63,36 @@ function getNodesFromCapturedData() {
   return nodes;
 }
 
+function getFakeData(callServerOnlyOnce) {
+  var nodes = getNodesFromCapturedData();
+  var upper = callServerOnlyOnce ? 6 : nRefresh;
+  var apps = getAppsFromCapturedData().slice(0, upper);
+
+  // prepare for the next time when data is served
+  nRefresh++;
+  if (nRefresh % 10 === 0) {
+    addOneNode(0);  // add a node into app 0
+  }
+  if (nRefresh === 5) {
+    finishOneApp(2);  // finish the app but will start later
+  }
+  if (nRefresh === 7) {
+    restartOneApp(2);  // restart preempted job
+  }
+  if (nRefresh === 10) {
+    finishOneApp(2);  // finish the app but will start later
+  }
+  if (nRefresh === 14) {
+    restartOneApp(2);  // restart preempted job
+  }
+  // maxAppFinishTime is defined in capturedData.js
+  if (maxAppFinishTime !== 0 && new Date().getTime() > maxAppFinishTime) {
+    callServerOnlyOnce = true;
+  }
+
+  return {nodes: nodes, apps: apps};
+}
+
 function makeOneAllocation(inApp, maxStartTime) {
   // pending allocation starts about 15 minutes after last job start
   var startTime = inApp.startTime + 30 * minute + Math.random() * 10 * minute;
