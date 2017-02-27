@@ -1,3 +1,24 @@
+/**
+* Licensed to the Apache Software Foundation (ASF) under one
+* or more contributor license agreements.  See the NOTICE file
+* distributed with this work for additional information
+* regarding copyright ownership.  The ASF licenses this file
+* to you under the Apache License, Version 2.0 (the
+* "License"); you may not use this file except in compliance
+* with the License.  You may obtain a copy of the License at
+*
+*     http://www.apache.org/licenses/LICENSE-2.0
+*
+* Unless required by applicable law or agreed to in writing, software
+* distributed under the License is distributed on an "AS IS" BASIS,
+* WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+* See the License for the specific language governing permissions and
+* limitations under the License.
+*/
+
+// a fake data generator for atlas.  It's a combination of captured data
+// and functions that add to the captured data and serve it to atlas.
+
 var capturedData = {"nodes":[{"rack":"/r0","nodeId":"rr329.narwhal.pdl.cmu.edu:52702"},{"rack":"/r0","nodeId":"rr369.narwhal.pdl.cmu.edu:54246"},{"rack":"/r1","nodeId":"rr266.narwhal.pdl.cmu.edu:53903"},{"rack":"/r1","nodeId":"rr319.narwhal.pdl.cmu.edu:49253"},{"rack":"/r1","nodeId":"rr134.narwhal.pdl.cmu.edu:39776"},{"rack":"/r0","nodeId":"rr263.narwhal.pdl.cmu.edu:44088"},{"rack":"/r0","nodeId":"rr288.narwhal.pdl.cmu.edu:52770"},{"rack":"/r1","nodeId":"rr356.narwhal.pdl.cmu.edu:39321"}],
 "apps":[
 {"appName":"6_9_120_120_110_110_0_0_362","applicationId":"application_1454444273400_0010","reservationId":"reservation_1454444273400_0011","startTime": 1454523171378, "finishTime":0,"state":"RUNNING","ranNodes":["rr288.narwhal.pdl.cmu.edu:52770"],"containers":[{"node":"rr288.narwhal.pdl.cmu.edu:52770","creationTime":1454523100000 /*71546*/,"finishTime":0}]},
@@ -84,10 +105,6 @@ function getFakeData(callServerOnlyOnce) {
   }
   if (nRefresh === 14) {
     restartOneApp(2);  // restart preempted job
-  }
-  // maxAppFinishTime is defined in capturedData.js
-  if (maxAppFinishTime !== 0 && new Date().getTime() > maxAppFinishTime) {
-    callServerOnlyOnce = true;
   }
 
   return {nodes: nodes, apps: apps};

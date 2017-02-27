@@ -77,6 +77,7 @@ function atlasPageEntryPoint() {
 
   // setInterval first waits for the interval, then executes the code inside.
   // To make the data appear faster, run one interation outside first.
+  console.log('start to call server');
   getDataFromServer();
 
   if (callServerOnlyOnce) {
@@ -875,8 +876,8 @@ function addRackButtons() {
           updateChart('categoriesChanged');
         });
       } else {  // rack is collapsed
-        y = $(label).offset().top + 20;
-        x = nodeLabelX;
+        x = nodeLabelX; // xxx + 20 + $('#chart_container').offset().left;
+        y = $(label).offset().top; // xxx + 20;
         // when all groups are collapsed, nodeLabelX is zero.
         // then place the button to the right of rack label
         if (x === 0) {
@@ -946,6 +947,9 @@ function addPlotBandAndLine(plotBands, plotLines, isRackBoundary) {
                    });
   }
 
+  // xxx var increment =  (plotBands.length % 2 === 1) ? 1.0 : 2.0;
+  // xxx newLine.value = plotLines[plotLines.length - 1].value + increment;
+
   newLine.value = plotLines[plotLines.length - 1].value + 1.0;
   newLine.width = isRackBoundary ? 2 : 1;
   newLine.color = 'black';
@@ -953,6 +957,7 @@ function addPlotBandAndLine(plotBands, plotLines, isRackBoundary) {
   newLine.zIndex = 5;
   plotLines.push(newLine);
 
+  // xxx newBand.to = newBand.from + increment;
   newBand.to = newBand.from + 1.0;
   newBand.id = 'band_' + plotBands.length.toString();  // needed for removal
   newBand.color = '#ddd';
