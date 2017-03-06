@@ -29,6 +29,7 @@ var windowChartWidthDiff = 0;
 var apps = {};
 var series = [];
 
+var collapsedRackMultiple = 3;  // multiple of node band a collapsed rack uses
 var groupCollection = null;
 var groups = null;  // sorted racks or partitions
 var nodesProcessed = false;
@@ -68,7 +69,7 @@ var justResetCollapseAllButton = false;  // reset button without any action
 // variables for debugging
 var catchServerData = false;
 var errorMsgToDump = '';
-var callServerOnlyOnce = false;
+var callServerOnlyOnce = true;
 
 ///// top level functions /////
 
@@ -273,7 +274,7 @@ function updateChart(categoriesChanged) {
       chart.xAxis[0].removePlotBand(bandIds[b]);
     }
     for (b in newProps.plotBands) {
-      chart.xAxis[0].addPlotBand(newProps.plotBands[b]);
+      chart.xAxis[0].addPlotBand(newProps.plotBands[b]);  // check after rack expand/collapse
     }
     for (l in chartProps.plotLines) {
       lineIds.push(chartProps.plotLines[l].id);
@@ -857,52 +858,30 @@ function addRackButtons() {
     if (label.textContent in groupCollection) {  // only care about rack label
       var rackId = label.textContent;
       var rack = groupCollection[rackId];
-      if (rack.expanded) {
-        var collapseButton = $('<input type="button" value="-" />');
-        rack.button = collapseButton;
-        collapseButton.appendTo($('body'));
-        // position the button below rack name and center it
-        var labelW = $(label)[0].getBoundingClientRect().width;
-        var buttonW = collapseButton[0].getBoundingClientRect().width;
-        x = $(label).offset().left + (labelW - buttonW) / 2;
-        y = $(label).offset().top + 20;
-        collapseButton.css({left: x, top: y, position: 'absolute'});
-        collapseButton.on('click',function() {
-          // catchServerData = true;  // side effect for debugging
-          rack.expanded = false;
-          justResetCollapseAllButton = true;
-          collapseAllButton.switchButton({checked: false});
-          justResetCollapseAllButton = false;
-          updateChart('categoriesChanged');
-        });
-      } else {  // rack is collapsed
-        x = nodeLabelX; // xxx + 20 + $('#chart_container').offset().left;
-        y = $(label).offset().top; // xxx + 20;
-        // when all groups are collapsed, nodeLabelX is zero.
-        // then place the button to the right of rack label
-        if (x === 0) {
-          x = $(label).offset().left + 15;
-        }
-        var expandButton = $('<input type="button" value="+" />');
-        rack.button = expandButton;
-        expandButton.appendTo($('body'));
-        expandButton.css({left: x, top: y, position: 'absolute'});
-        expandButton.on('click',function() {
-          // catchServerData = true;  // side effect for debugging
-          rack.expanded = true;
-          justResetCollapseAllButton = true;
-          collapseAllButton.switchButton({checked: false});
-          justResetCollapseAllButton = false;
-          updateChart('categoriesChanged');
-        });
-      }
+      var button = rack.expanded ? $('<input type="button" value="-" />') : $('<input type="button" value="+" />');
+      rack.button = button;
+      button.appendTo($('body'));
       // buttons on hadoop pages have no border.  add one
-      rack.button.css({"border-color": "black",
-                       "border-radius": "5px",
-                       "border-width":"1px",
-                       "border-style":"solid"});
+      button.css({"border-color": "black",
+                  "border-radius": "5px",
+                  "border-width": "1px",
+                  "font-family": "monospace",
+                  "border-style": "solid"});
 
+      // position the button below rack name and center it
+      var labelW = $(label)[0].getBoundingClientRect().width;
+      var buttonW = button[0].getBoundingClientRect().width;
+      x = $(label).offset().left + (labelW - buttonW) / 2;
+      y = $(label).offset().top + 15;
+      button.css({left: x, top: y, position: 'absolute'});
 
+      button.on('click', function() {
+        rack.expanded = !rack.expanded;
+        justResetCollapseAllButton = true;  // xxx ???
+        collapseAllButton.switchButton({checked: false});
+        justResetCollapseAllButton = false;
+        updateChart('categoriesChanged');
+      });
     }
   });
 }
@@ -931,9 +910,10 @@ function makeFakeSeries() {
   return fakeSeries;
 }
 
-function addPlotBandAndLine(plotBands, plotLines, isRackBoundary) {
+function addPlotBandAndLine(plotBands, plotLines, isRackBoundary, isRack) {
   var newBand = {};
   var newLine = {};
+  var spacing = isRack? 1.0 * collapsedRackMultiple : 1.0;
 
   newBand.from = -0.5;
   if (plotBands.length > 0) {
@@ -947,20 +927,16 @@ function addPlotBandAndLine(plotBands, plotLines, isRackBoundary) {
                    });
   }
 
-  // xxx var increment =  (plotBands.length % 2 === 1) ? 1.0 : 2.0;
-  // xxx newLine.value = plotLines[plotLines.length - 1].value + increment;
-
-  newLine.value = plotLines[plotLines.length - 1].value + 1.0;
-  newLine.width = isRackBoundary ? 2 : 1;
+  newLine.value = plotLines[plotLines.length - 1].value + spacing;
+  newLine.width = isRackBoundary? 2 : 1;
   newLine.color = 'black';
   newLine.id = 'line_' + plotLines.length.toString();  // needed for removal
   newLine.zIndex = 5;
   plotLines.push(newLine);
 
-  // xxx newBand.to = newBand.from + increment;
-  newBand.to = newBand.from + 1.0;
+  newBand.to = newBand.from + spacing;
   newBand.id = 'band_' + plotBands.length.toString();  // needed for removal
-  newBand.color = '#ddd';
+  newBand.color = isRack? '#dde' : '#ddd';  // rack is purple and node grey
   plotBands.push(newBand);
 }
 
@@ -990,27 +966,36 @@ function makeCategories() {
         if (n + 1 === rack.nodes.length && r + 1 !== groups.length) {
           isRackBoundary = true;
         }
-        addPlotBandAndLine(plotBands, plotLines, isRackBoundary);
+        addPlotBandAndLine(plotBands, plotLines, isRackBoundary, false /* isTrack */);
         // console.log('category', categoryIdx, rack.nodes[n]);
       }
     } else {
-      group.categories = ' ';
+      // for a collapsed rack, use more vertical space by givng it multiple
+      // bands (see collapsedRackMultiple).
+      // To fool the grouped-category module, give each band a name that's
+      // just blanks.  The number of blanks should be different so that they can
+      // be identified in grouped-category.  See comment by czang in that
+      // module.
+      group.categories = [];
+      var spaces = '';
+      for (var i = 0; i < collapsedRackMultiple; i++) {
+        group.categories.push(spaces);
+        spaces = spaces + ' ';
+      }
+
       for (n in rack.nodes) {
         nodeCollection[rack.nodes[n]].categoryIdx = -1;
       }
-      rack.categoryIdx = categoryIdx++;
+      rack.categoryIdx = categoryIdx = categoryIdx + collapsedRackMultiple;
       if (r + 1 !== groups.length) {
         isRackBoundary = true;
       }
-      addPlotBandAndLine(plotBands, plotLines, isRackBoundary);
+      addPlotBandAndLine(plotBands, plotLines, true, true);
       // console.log('category', categoryIdx, rackId);
     }
   }
 
-  // The groupedCategory package does something strange so that the
-  // bands are narrower when all groups are collapsed.  Now give more space
-  var factor = (allCollapsed) ? 120 : 30;
-  chartHeight = categoryIdx * factor;
+  chartHeight = categoryIdx * 20 + 40;
 
   return {plotBands: plotBands,
           plotLines: plotLines,
