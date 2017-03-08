@@ -509,27 +509,22 @@ tickProto.render = function (index, old, opacity) {
     
   if(horiz && axis.left < xy.x) {
     addGridPart(grid, [xy.x - reverseCrisp, xy.y, xy.x - reverseCrisp, xy.y + size], tickWidth);
-    } else if(!horiz && axis.top <= xy.y){
+  } else if(!horiz && axis.top <= xy.y) {
 
-      // feature added by czang@cmu.edu: if all categories in the sub-group are blanks,
-      // we don't put horizontal separators between the categories.  Thus the user will see
-      // the space for the N categories as one large empty space instead of N empty spaces
-      // devidedb by lines.
-      // To achieve this, the application needs to pass the empty categories as strings of
-      // blanks of different lengths, so that the code below knows which category is the last
-      // one in the group and produces a line between it and the first category in the next group.
+    // change made by czang@cmu.edu: if all categories in the sub-group are blanks,
+    // we don't put horizontal separators between the categories.  Thus the user will see
+    // the space for the N categories as one large empty space instead of N empty spaces
+    // devidedb by lines.
+    // To achieve this, the application needs to pass the empty categories as strings of
+    // blanks of different lengths, so that the code below knows which category is the last
+    // one in the group and produces a line between it and the first category in the next group.
 
-      var skipSeparatorLine = false;
-      if (cat.parent.categories.constructor === Array &&
-          cat.name !== cat.parent.categories[cat.parent.leaves - 1] &&  // last category in the group
-          $.trim(cat.parent.categories.join('')) === '') {  // all categories are blanks
-        skipSeparatorLine = true;
-      }
-
-      if (!skipSeparatorLine) {
+    if (cat.parent.categories.constructor !== Array ||  // must be array for test conditions below
+        $.trim(cat.parent.categories.join('')) !== '' ||  // some categories are not blanks
+        cat.name === cat.parent.categories[cat.parent.leaves - 1]) {  // last category in the group
         addGridPart(grid, [xy.x, xy.y + reverseCrisp, xy.x + size, xy.y + reverseCrisp], tickWidth);
-      }
     }
+  }
 
   size = start + size;
 

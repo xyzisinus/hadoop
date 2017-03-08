@@ -29,7 +29,6 @@ var windowChartWidthDiff = 0;
 var apps = {};
 var series = [];
 
-var collapsedRackMultiple = 3;  // multiple of node band a collapsed rack uses
 var groupCollection = null;
 var groups = null;  // sorted racks or partitions
 var nodesProcessed = false;
@@ -48,6 +47,12 @@ rackInfo.prototype.seriesId = function() {
 rackInfo.prototype.seriesColor = function() {
   return 'rgba(255, 165, 0, 0.3)';
 };
+
+// vertical spacing
+var bandHeight = 20;
+var chartHeightPadding = 40;
+var collapsedRackMultiple = 3;  // multiple of node band for a collapsed rack
+var timelineHeight = 130;
 
 var appSeriesPrefix = 'Atlas_app_';
 var fakeSeriesId = 'atlas_fake_series';
@@ -295,8 +300,10 @@ function updateChart(categoriesChanged) {
         chart.get(rack.seriesId('future')).remove(false);
       }
 
-      rack.button.remove();  // remove the old buttons
-      rack.button = null;
+      if (rack.button !== null) {
+        rack.button.remove();  // remove the old buttons
+        rack.button = null;
+      }
     }
 
     chart.xAxis[0].setCategories(newProps.groupedCategories, false);
@@ -508,8 +515,13 @@ function processNodes(inNodes) {
   }
 
   $.each(inNodes, function(index, inNode) {
-    var nodeId = inNode.nodeId.split('.')[0];
-    var rackId = inNode.rack.substr(1);
+    var nodeId = inNode.nodeId.split('.')[0];  // e.g. get node4 in node4.example.com
+    var rackId = inNode.rack;
+    if (rackId === undefined || $.trim(rackId) === '') {
+        rackId = 'undefined';  // no rack or rack name as white spaces
+    } else if (inNode.rack[0] === '/') {  // common leading char in rack name string
+      var rackId = rackId.substr(1);
+    }
 
       var node = {};
       node.fullId = inNode.nodeId;
@@ -552,7 +564,7 @@ function makeCollapsedGroupSeries(type, group, data) {
   var b = group.categoryIdx + 0.5;
   var nNodes = group.nodes.length;
   for (var i = 0; i < data.length; i++) {
-    var h = b - Number(data[i].value) / Number(nNodes);
+    var h = b - Number(data[i].value) / Number(nNodes) * collapsedRackMultiple;
     // console.log('height', h, b, data[i].value);
 
     if (i > 0) { // not the first interval
@@ -858,6 +870,13 @@ function addRackButtons() {
     if (label.textContent in groupCollection) {  // only care about rack label
       var rackId = label.textContent;
       var rack = groupCollection[rackId];
+
+      // if the rack is too small, there is no space for the expand button
+      if (rack.nodes.length < collapsedRackMultiple && rack.expanded) {
+        rack.button = null;
+        return true;
+      }
+
       var button = rack.expanded ? $('<input type="button" value="-" />') : $('<input type="button" value="+" />');
       rack.button = button;
       button.appendTo($('body'));
@@ -986,7 +1005,8 @@ function makeCategories() {
       for (n in rack.nodes) {
         nodeCollection[rack.nodes[n]].categoryIdx = -1;
       }
-      rack.categoryIdx = categoryIdx = categoryIdx + collapsedRackMultiple;
+      rack.categoryIdx = categoryIdx + collapsedRackMultiple - 1;
+      categoryIdx += collapsedRackMultiple;
       if (r + 1 !== groups.length) {
         isRackBoundary = true;
       }
@@ -995,7 +1015,7 @@ function makeCategories() {
     }
   }
 
-  chartHeight = categoryIdx * 20 + 40;
+  chartHeight = categoryIdx * bandHeight + chartHeightPadding;
 
   return {plotBands: plotBands,
           plotLines: plotLines,
@@ -1199,7 +1219,7 @@ function positionTimeline() {
   // a blank window (the interesting part is invisible as the upper portion).
   // thrink the size of container so that the window shrinks. too.
   var content = $('#general_container');
-  content.height(chartHeight + 130);
+  content.height(chartHeight + timelineHeight);
 }
 
 ///// helper functions /////
