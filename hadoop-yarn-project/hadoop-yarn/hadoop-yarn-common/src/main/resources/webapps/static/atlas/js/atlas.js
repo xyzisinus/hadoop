@@ -28,8 +28,6 @@ var windowChartWidthDiff = 0;
 var apps = {};
 var series = [];
 
-var groupCollection = null;
-var groups = null;  // sorted racks or partitions
 var nodesProcessed = false;
 var nodeCollection = {};  // node id -> app usage, state, categoriesIdx, etc
 var rackCollection = {};  // rack id -> nodes, expanding state, etc
@@ -306,8 +304,8 @@ function updateChart(categoriesChanged) {
       chart.xAxis[0].addPlotLine(newProps.plotLines[l]);
     }
 
-    for (rackId in groupCollection) {  // can be rack or partition
-      rack = groupCollection[rackId];
+    for (rackId in rackCollection) {
+      rack = rackCollection[rackId];
       if (chart.get(rack.seriesId()) !== null) {
         chart.get(rack.seriesId()).remove(false);
       }
@@ -329,8 +327,8 @@ function updateChart(categoriesChanged) {
 
   // add rack series.
   // If categories changed, code above should have removed old ones already.
-  for (rackId in groupCollection) {
-    rack = groupCollection[rackId];
+  for (rackId in rackCollection) {
+    rack = rackCollection[rackId];
     if (rack.expanded) {
       continue;
     }
@@ -382,7 +380,6 @@ function updateChart(categoriesChanged) {
     addRackButtons();
   }
 
-  // this should be done after the allocation partitions is put in
   processTimeline();
 }
 
@@ -522,7 +519,7 @@ function processApps(inApps) {
   });
 }
 
-// Nodes from the server have rack property.  So groupCollection structure
+// Nodes from the server have rack property.  So rackCollection structure
 // is also made here.
 function processNodes(inNodes) {
   if (nodesProcessed) {
@@ -566,18 +563,15 @@ function processNodes(inNodes) {
     rackCollection[racks[r]].nodes.sort();
   }
 
-  groupCollection = rackCollection;
-  groups = racks;
-
   nodesProcessed = true;
 }
 
 ///// data related chart ops /////
 
-function makeCollapsedGroupSeries(type, group, data) {
+function makeCollapsedRackSeries(type, rack, data) {
   var dataSet = [];
-  var b = group.categoryIdx + 0.5;
-  var nNodes = group.nodes.length;
+  var b = rack.categoryIdx + 0.5;
+  var nNodes = rack.nodes.length;
   for (var i = 0; i < data.length; i++) {
     var h = b - Number(data[i].value) / Number(nNodes) * collapsedRackMultiple;
     // console.log('height', h, b, data[i].value);
@@ -597,22 +591,22 @@ function makeCollapsedGroupSeries(type, group, data) {
     dataSet.push([b, data[i].to]);
   }
 
-  var groupSeries = {
+  var rackSeries = {
     type: 'polygon',
     showInLegend: false,
-    id: group.seriesId(type),
-    name: group.seriesId(type),
+    id: rack.seriesId(type),
+    name: rack.seriesId(type),
     // enableMouseTracking: false,
     shadow: true,
-    color: group.seriesColor(type),
+    color: rack.seriesColor(type),
     data: dataSet
   };
 
-  return (dataSet.length === 0) ? null: groupSeries;
+  return (dataSet.length === 0) ? null: rackSeries;
 }
 
 function makeSeriesForOneRack(rackId) {
-  var rack = groupCollection[rackId];
+  var rack = rackCollection[rackId];
   var data = [];
 
   for (var appId in apps) {
@@ -626,7 +620,7 @@ function makeSeriesForOneRack(rackId) {
     }
   }
 
-  return makeCollapsedGroupSeries(rack.kind(), rack, data);
+  return makeCollapsedRackSeries(rack.kind(), rack, data);
 }
 
 function buildRackUsage(inData, start, finish, value) {
@@ -794,7 +788,7 @@ function makeSeriesForOneApp(appId) {
   var dataSet = [];
 
   $.each(apps[appId].nodesOccupied, function(n, duration) {
-    if (nodeCollection[n].categoryIdx !== -1) {  // node is in collapsed group
+    if (nodeCollection[n].categoryIdx !== -1) {  // node is in collapsed rack
       dataSet.push({x: nodeCollection[n].categoryIdx,
                     low: duration[0],
                     high: duration[1]});
@@ -855,8 +849,8 @@ function addCollapseAllButton() {
     off_label: 'none'
   }).change(function() {
     if (changeCollapseAllButtonWithAction) {
-      for (var g in groupCollection) {
-        groupCollection[g].changeExpandState(!this.checked);
+      for (var g in rackCollection) {
+        rackCollection[g].changeExpandState(!this.checked);
       }
       updateChart('categoriesChanged');
     }
@@ -881,9 +875,9 @@ function addRackButtons() {
   });
 
   $('.highcharts-xaxis-labels').children().each(function(i, label) {
-    if (label.textContent in groupCollection) {  // only care about rack label
+    if (label.textContent in rackCollection) {  // only care about rack label
       var rackId = label.textContent;
-      var rack = groupCollection[rackId];
+      var rack = rackCollection[rackId];
 
       // if the rack is too small, there is no space for the expand button
       if (rack.nodes.length < collapsedRackMultiple && rack.expanded) {
@@ -926,8 +920,8 @@ function addRackButtons() {
 // when there is no apps, we need a fake series to show the nodes
 function makeFakeSeries() {
   var fakeData = [];
-  $.each(groups, function(r, rackId) {
-    var rack = groupCollection[rackId];
+  $.each(racks, function(r, rackId) {
+    var rack = rackCollection[rackId];
     if (rack.expanded) {
       for (var n in rack.nodes) {
         fakeData.push([null, null]);
@@ -985,9 +979,9 @@ function makeCategories() {
   var groupedNodes = [];
   var allCollapsed = true;
 
-  for (var r = 0; r < groups.length; r++) {
-    var rackId = groups[r];
-    var rack = groupCollection[rackId];
+  for (var r = 0; r < racks.length; r++) {
+    var rackId = racks[r];
+    var rack = rackCollection[rackId];
     var group = {};
     groupedNodes.push(group);
     group.name = rackId;
@@ -1000,7 +994,7 @@ function makeCategories() {
       for (n = 0; n < rack.nodes.length; n++) {
         nodeCollection[rack.nodes[n]].categoryIdx = categoryIdx++;
         isRackBoundary = false;
-        if (n + 1 === rack.nodes.length && r + 1 !== groups.length) {
+        if (n + 1 === rack.nodes.length && r + 1 !== racks.length) {
           isRackBoundary = true;
         }
         addPlotBandAndLine(plotBands, plotLines, isRackBoundary, false /* isTrack */);
@@ -1025,7 +1019,7 @@ function makeCategories() {
       }
       rack.categoryIdx = categoryIdx + collapsedRackMultiple - 1;
       categoryIdx += collapsedRackMultiple;
-      if (r + 1 !== groups.length) {
+      if (r + 1 !== racks.length) {
         isRackBoundary = true;
       }
       addPlotBandAndLine(plotBands, plotLines, true, true);
