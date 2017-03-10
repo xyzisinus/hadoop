@@ -47,6 +47,17 @@ rackInfo.prototype.seriesId = function() {
 rackInfo.prototype.seriesColor = function() {
   return 'rgba(255, 165, 0, 0.3)';
 };
+rackInfo.prototype.changeExpandState = function(expand) {
+  // if the new state agrees with the current state, do nothing
+  if (this.expanded? expand : !expand) {
+    return;
+  }
+  this.expanded = expand;
+  numCollapsedRacks += expand? -1 : 1;
+}
+rackInfo.prototype.flipExpandState = function() {
+  this.changeExpandState(!this.expanded);
+}
 
 // vertical spacing
 var bandHeight = 20;
@@ -70,6 +81,8 @@ var timeline = null;
 var allExpanded = true;  // reflect the collapse/expand all button
 var collapseAllButton = null;
 var justResetCollapseAllButton = false;  // reset button without any action
+var numCollapsedRacks = 0;
+var changeCollapseAllButtonWithNoAction = false;
 
 // variables for debugging
 var catchServerData = false;
@@ -839,12 +852,11 @@ function addCollapseAllButton() {
     on_label: 'all',
     off_label: 'none'
   }).change(function() {
-    allExpanded = !this.checked;
-    if (justResetCollapseAllButton) {
+    if (changeCollapseAllButtonWithNoAction) {
       return;
     }
     for (var g in groupCollection) {
-      groupCollection[g].expanded = !this.checked;
+      groupCollection[g].changeExpandState(!this.checked);
     }
     updateChart('categoriesChanged');
   });
@@ -856,6 +868,7 @@ function addRackButtons() {
 
   // xxx Since there is no api to find the labels, I use a dirty way.
   // All labels are children of an element of xaxis-labels class.
+  // -- czang@cmu.edu
 
   // The first loop is to find the x of a node label.  Needed to
   // place expand buttons which align with node labels.
@@ -895,11 +908,15 @@ function addRackButtons() {
       button.css({left: x, top: y, position: 'absolute'});
 
       button.on('click', function() {
-        rack.expanded = !rack.expanded;
-        justResetCollapseAllButton = true;  // xxx ???
-        collapseAllButton.switchButton({checked: false});
-        justResetCollapseAllButton = false;
+        rack.flipExpandState();
         updateChart('categoriesChanged');
+
+        // change collaps-all button's state when all racks are collapsed.
+        // but we don't want the handler to do any real work because it's
+        // done here.
+        changeCollapseAllButtonWithNoAction = true;
+        collapseAllButton.switchButton({checked: (numCollapsedRacks === racks.length)});
+        changeCollapseAllButtonWithNoAction = false;
       });
     }
   });
