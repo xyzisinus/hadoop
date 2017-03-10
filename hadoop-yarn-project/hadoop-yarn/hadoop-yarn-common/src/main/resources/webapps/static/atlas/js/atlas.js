@@ -17,7 +17,6 @@
 */
 
 var chart = null;
-var chartTitle = null;
 var chartProps = {}; // plotBands/Lines, groupedCategories, nCategories, etc
 var chartHeight = 0;
 var windowChartWidthDiff = 0;
@@ -82,7 +81,7 @@ var allExpanded = true;  // reflect the collapse/expand all button
 var collapseAllButton = null;
 var justResetCollapseAllButton = false;  // reset button without any action
 var numCollapsedRacks = 0;
-var changeCollapseAllButtonWithNoAction = false;
+var changeCollapseAllButtonWithAction = true;
 
 // variables for debugging
 var catchServerData = false;
@@ -101,7 +100,7 @@ function atlasPageEntryPoint() {
 
   if (callServerOnlyOnce) {
     // when debugging, we don't want to see repeated error msgs from the
-    // same bug.  so just stop calling server.
+    // same bug.  so just call server once.
     return;
   }
 
@@ -137,16 +136,19 @@ function processData(data) {
   var inApps = [];
   var inNodes = [];
 
-  // If the app doesn't have the finish time, the finish time is the uniform
-  // current time of the data fetching loop.  This current time is also used
-  // to draw the "now" line.
+  // If the app doesn't have the finish time, the finish time is now.  To keep
+  // current time uniform for different apps and nodes so that the "now" line
+  // fits well, we keep one copy of the current time for every use case in
+  // refresh cycle. currentTimeUsed becomes true, if the uniform time is used
+  // in the current loop so that "now" line will use the uniform time, too.
   timeInCurrentLoop = new Date().getTime();
-  currentTimeUsed = false;
+  currentTimeUsed = false;  // will become true if used in the current loop
 
   if (catchServerData) {
     catchServerData = false;
     dumpData(data);
   }
+
   $.each(data, function(key, list) {
     if (key === 'nodes') {
       inNodes = data.nodes;
@@ -210,7 +212,7 @@ function makeChart() {
       inverted: true
     },
     title: {
-      text: chartTitle
+      text: null
     },
 
     xAxis: {
@@ -852,13 +854,12 @@ function addCollapseAllButton() {
     on_label: 'all',
     off_label: 'none'
   }).change(function() {
-    if (changeCollapseAllButtonWithNoAction) {
-      return;
+    if (changeCollapseAllButtonWithAction) {
+      for (var g in groupCollection) {
+        groupCollection[g].changeExpandState(!this.checked);
+      }
+      updateChart('categoriesChanged');
     }
-    for (var g in groupCollection) {
-      groupCollection[g].changeExpandState(!this.checked);
-    }
-    updateChart('categoriesChanged');
   });
 }
 
@@ -914,9 +915,9 @@ function addRackButtons() {
         // change collaps-all button's state when all racks are collapsed.
         // but we don't want the handler to do any real work because it's
         // done here.
-        changeCollapseAllButtonWithNoAction = true;
+        changeCollapseAllButtonWithAction = false;
         collapseAllButton.switchButton({checked: (numCollapsedRacks === racks.length)});
-        changeCollapseAllButtonWithNoAction = false;
+        changeCollapseAllButtonWithAction = true;
       });
     }
   });
