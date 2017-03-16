@@ -20,6 +20,7 @@ var chart = null;
 var chartProps = {}; // plotBands/Lines, groupedCategories, nCategories, etc
 var chartHeight = 0;
 var windowChartWidthDiff = 0;
+var chartMinMax = [null, null];  // let chart decide, or set by timeline
 
 // apps are indexed by application id.
 // the structure maintains the state of the apps across refresh.
@@ -75,16 +76,14 @@ var timelineBox = null;
 var timeline = null;
 
 // "collapse all racks" button
-var allExpanded = true;  // reflect the collapse/expand all button
 var collapseAllButton = null;
-var justResetCollapseAllButton = false;  // reset button without any action
 var numCollapsedRacks = 0;
 var changeCollapseAllButtonWithAction = true;
 
 // variables for debugging
 var catchServerData = false;
 var errorMsgToDump = '';
-var callServerOnlyOnce = true;
+var callServerOnlyOnce = false;
 
 ///// top level functions /////
 
@@ -269,9 +268,12 @@ function makeChart() {
 function updateChart(categoriesChanged) {
   var needRedraw = false;
   var layoutChanged = false;
+  var min = chart.yAxis[0].getExtremes().min;
+  var max = chart.yAxis[0].getExtremes().max;
 
   var rack, rackId;
   if (categoriesChanged !== undefined) {
+    // this update is caused by rack collapse/expand
     var bandIds = [];
     var lineIds = [];
     var b, l;
@@ -282,9 +284,9 @@ function updateChart(categoriesChanged) {
 
     chart.setSize($('#chart_container').width(), chartHeight, false);
 
-    // must copy the band/line ids before removing.  highchart just
-    // uses MY bands and lines.  So if I loop through the bands, I'm
-    // doing removal on the dame data structure.
+    // Remove all existing bands and lines before adding new ones.
+    // Must copy the band/line ids before removing.  highchart directly
+    // removes from MY data structures.  So must keep the ids separately.
     for (b in chartProps.plotBands) {
       bandIds.push(chartProps.plotBands[b].id);
     }
@@ -309,9 +311,6 @@ function updateChart(categoriesChanged) {
       if (chart.get(rack.seriesId()) !== null) {
         chart.get(rack.seriesId()).remove(false);
       }
-      if (chart.get(rack.seriesId('future')) !== null) {
-        chart.get(rack.seriesId('future')).remove(false);
-      }
 
       if (rack.button !== null) {
         rack.button.remove();  // remove the old buttons
@@ -325,11 +324,11 @@ function updateChart(categoriesChanged) {
     chartProps = newProps;
   }
 
-  // add rack series.
-  // If categories changed, code above should have removed old ones already.
+  // add rack series. If categories have changed, code above should have
+  // removed all existing rack series' already.
   for (rackId in rackCollection) {
     rack = rackCollection[rackId];
-    if (rack.expanded) {
+    if (rack.expanded) {  // no rack series for expanded racks
       continue;
     }
 
@@ -353,7 +352,7 @@ function updateChart(categoriesChanged) {
   for (var appId in apps) {
     var app = apps[appId];
     var seriesId = apps[appId].seriesId;
-    if (app.state == 'new' || app.state == 'updated' || layoutChanged) {
+    if (app.hasNewData || layoutChanged) {
       needRedraw = true;
       var appSeries = makeSeriesForOneApp(appId);
       if (appSeries.data.length !== 0) {
@@ -372,15 +371,26 @@ function updateChart(categoriesChanged) {
     chart.get(fakeSeriesId).setData(makeFakeSeries(), false);
   }
 
+  // chart time window: if not set by timeline, highchart decides by default.
+  // With rack collapse/expend, highchart's redraw may shift its viewing
+  // time window.  To keep the window stable, we record the current time
+  // window and set it.  If the update is cause  by data refresh, then we
+  // set the default back to "let highchart decide".
+  if (chartMinMax[0] === null) {  // time window not set by timeline
+    if (categoriesChanged) {  // update caused by rack collapse/expand.
+      chart.yAxis[0].setExtremes(min, max);  // set to saved size
+    } else {  // caused by data refresh
+      chart.yAxis[0].setExtremes(null, null);  // let highchart decide
+    }
+  }
   if (needRedraw) {
     chart.redraw();
   }
-  updateNowLine();
   if (layoutChanged) {
     addRackButtons();
   }
 
-  processTimeline();
+  processTimeline();  // "now" line is handled, too
 }
 
 ///// incoming data processing /////
@@ -389,133 +399,81 @@ function intervalsOverlap(d1, d2) {
   return (d1[0] < d2[1] && d2[0] < d1[1]) ? true : false;
 }
 
-function updateAppState(inApp, nodesOccupied, pendingAllocations, finished) {
-  var id = inApp.applicationId;
-  // app has already finished when first seen.  ignore.
-  if (!(id in apps) && finished) return;
 
-  if (id in apps && finished) {
-    apps[id].state = 'finished';
-    apps[id].serverState = 'FINISHED';
+// update app state and save the current dataset for the app.
+// Note: finished app has an empty list of nodesInUse argument.
+function updateAppState(inApp, nodesOccupied, finished) {
+  var id = inApp.applicationId;
+  if (id in apps && apps[id].finished) {
+    // now we know the app is finished from previous rounds
+    apps[id].hasNewData = false;
     return;
   }
 
   if (!(id in apps)) {  // make new app entry
     apps[id] = {};
-    apps[id].state = 'new';
     apps[id].nodesOccupied = {};
-    apps[id].nodeUseHistory = {};  // preexempted nodes history
     apps[id].seriesId = appSeriesPrefix + id;
     apps[id].color = null;
-  } else {
-    apps[id].state = 'unchanged';
   }
+  var app = apps[id];
 
-  apps[id].startTime = inApp.startTime;
-  apps[id].finishTime = (inApp.finishTime === 0) ?
-    timeInCurrentLoop : inApp.finishTime;
-  apps[id].serverState = inApp.state;
-  apps[id].nContainers = Object.keys(nodesOccupied).length;
-  apps[id].estimatedFinishTime = inApp.finishTime;
-  apps[id].pendingAllocFinishTime = 0;
-  apps[id].pendingAllocContainers = 0;
-
-  // If tooltip info exists
-  if ('tooltip_info' in inApp) {
-    for (var k in inApp.tooltip_info) {
-      apps[id][k] = inApp.tooltip_info[k];
-    }
+  app.finished = finished;
+  app.hasNewData = true;
+  app.startTime = inApp.startTime;
+  var finishTime = Number(inApp.finishTime);
+  if (finishTime === 0) {
+    app.finishTime = timeInCurrentLoop;
+    currentTimeUsed = true;
   }
+  app.serverState = inApp.state;
+  app.nContainers = Object.keys(nodesOccupied).length;
 
-  // xxx need rework the state keeping now app's container set can add
-  // AND subtract
-  apps[id].state = 'updated';
-
-  var newList = {};
+  // go through the nodes used and record the duration of their use.
+  // If a node is already on record, only change its finishTime.
+  // xxx need to consider multiple apps on the same node.
   $.each(nodesOccupied, function(n, duration) {
-    newList[n] = [duration[0], duration[1]];
-    if (n in apps[id].nodesOccupied) {
-      // there is a record that the node has been used by the app.
-      // if the duration on record is pretty much the same duration,
-      // (with some extension in the new duration), delete the old
-      // record.  Otherwise it's the case where the app was preempted
-      // and now restarted.  Then don't delete so the duration can go
-      // nodeUseHistory
-      // ppp
-      if (intervalsOverlap(duration, apps[id].nodesOccupied[n])) {
-        delete apps[id].nodesOccupied[n];
-      }
+    if (n in app.nodesOccupied) {
+      // xxx add two asserts: start time remains same and there is only one
+      // time section
+      app.nodesOccupied[n][1] = duration[1];
+    } else {
+      app.nodesOccupied[n] = [duration[0], duration[1]];
     }
   });
-
-  // leftover in app's nodesOccupied go to node use history
-  for (var n in apps[id].nodesOccupied) {
-    var duration = apps[id].nodesOccupied[n];
-    if (n in apps[id].nodeUseHistory) {
-      apps[id].nodeUseHistory[n].push([duration[0], duration[1]]);
-    } else {
-      apps[id].nodeUseHistory[n] = [[duration[0], duration[1]]];
-    }
-  }
-  apps[id].nodesOccupied = newList;
 }
 
 function processApps(inApps) {
   $.each(inApps, function(index, inApp) {
     var finishedApp = false;
     var nodesOccupied = {};  // node -> [startTime, finishTime]
-    var pendingAllocations = [];
     var finishTime = 0;
 
-    // loop through the nodes used by the app
-    for (var ranNodeIdx in inApp.ranNodes) {
-      var startTime = Number(inApp.startTime);
-      var nodeId = inApp.ranNodes[ranNodeIdx].split('.')[0];
-
-      if (inApp.state === 'FINISHED') {
-        // App is finished. We only know the app's creation time
-        // on each node if the client gets the app info when it's running.
-        // So if an app has already finished when the client is started,
-        // we simply don't show the app because the start time on individual
-        // nodes is not provided for finished apps by the server.
-        if (!(inApp.applicationId in apps)) {
-          return true;
-        }
-
-        finishTime = Number(inApp.finishTime);
-        if (finishTime === 0) {
-          finishTime = timeInCurrentLoop;
-          currentTimeUsed = true;
-          console.log('finished current time', timeInCurrentLoop);
-        }
-        finishedApp = true;
-      } else if (inApp.state === 'RUNNING') {
-        var container = inApp.containers[ranNodeIdx];
-        startTime = inApp.containers[ranNodeIdx].creationTime;
-        finishTime = timeInCurrentLoop;
-        // console.log('running current time', timeInCurrentLoop);
-        currentTimeUsed = true;
-      } else {
-        console.log('invalid app state:', inApp.applicationId. inApp.state);
+    if (inApp.state === 'FINISHED') {
+      // If an app has already finished when Atlas is started,
+      // we don't show the app because the server doesn't provide
+      // containers for a finished and we don't have interesting info to show
+      if (!(inApp.applicationId in apps)) {
         return true;
       }
+      finishedApp = true;
+    } else if (inApp.state !== 'RUNNING') {
+      // xxx pop up error then continue
+      console.log('invalid app state:', inApp.applicationId. inApp.state);
+      return true;  // still continue processing apps
+    } else {
+      for (var ranNodeIdx in inApp.ranNodes) {
+        var nodeId = inApp.ranNodes[ranNodeIdx].split('.')[0];
+        var container = inApp.containers[ranNodeIdx];
 
-      nodesOccupied[nodeId] = [startTime, finishTime];
+        startTime = inApp.containers[ranNodeIdx].creationTime;
+        finishTime = timeInCurrentLoop;
+        currentTimeUsed = true;
+        nodesOccupied[nodeId] = [startTime, finishTime];
+      }
     }
 
-    // ppp
-    /*
-    if (useCapturedData) {
-      addPendingAllocations(inApp);  // no op if not using captured data
-    }
-    */
-
-    if ('pending_future_allocations' in inApp) {
-      pendingAllocations = inApp.pending_future_allocations;
-    }
-
-    // update app state and save the current dataset for the app
-    updateAppState(inApp, nodesOccupied, pendingAllocations, finishedApp);
+    updateAppState(inApp, nodesOccupied, finishedApp);
   });
 }
 
@@ -646,7 +604,7 @@ function buildRackUsage(inData, start, finish, value) {
   */
 
   // each rack data point is to/from/value.  to/from is time interval.
-  // value is how many nodes are occupied in the interval.
+  // value is how many nodes are used in the interval.
   // we will increment the value of the intervals that are
   // in startTime/finishTime range and insert intervals to fill the gaps.
 
@@ -794,15 +752,7 @@ function makeSeriesForOneApp(appId) {
                     high: duration[1]});
     }
   });
-  $.each(apps[appId].nodeUseHistory, function(n, history) {
-    if (nodeCollection[n].categoryIdx !== -1) {
-      for (var i in history) {
-        dataSet.push({x: nodeCollection[n].categoryIdx,
-                      low: history[i][0],
-                      high: history[i][1]});
-      }
-    }
-  });
+
   // sort data on time axis to please highchart
   dataSet.sort(function(a,b) {
     return (a.x > b.x) ? 1 : ((b.x > a.x) ? -1 : 0);
@@ -1089,11 +1039,13 @@ function processTimeline() {
 
 function onSelect(info) {
   if (!info.byUser) return;
+  chartMinMax = [info.start, info.end];
   chart.yAxis[0].setExtremes(info.start, info.end);
   // chart.yAxis[0].setExtremes(null, null);  // resume auto setting min/max
 }
 
 function onDoubleClick(info) {
+  chartMinMax = [null, null];
   chart.yAxis[0].setExtremes(null, null);  // resume auto setting min/max
 }
 
