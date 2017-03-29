@@ -38,6 +38,23 @@ var maxNumPartitions = 3;
 var interval = 0;
 var addMoreNodes = true;  // set to true if adding more nodes
 var nExtraNodes = 20;  // number of fake nodes to add
+// the initial seed
+Math.seed = 6;
+var repeatableRandom = true;  // generated a repeatable random sequence
+
+// in order to work 'Math.seed' must NOT be undefined,
+// so in any case, you HAVE to provide a Math.seed
+Math.seededRandom = function(max, min) {
+  if (!repeatableRandom) {
+    return Math.random();
+  }
+
+  max = max || 1;
+  min = min || 0;
+  Math.seed = (Math.seed * 9301 + 49297) % 233280;
+  var rnd = Math.seed / 233280;
+  return min + rnd * (max - min);
+}
 
 function addNodes() {
   addMoreNodes = false;
@@ -112,14 +129,14 @@ function getFakeData(callServerOnlyOnce) {
 
 function makeOneAllocation(inApp, maxStartTime) {
   // pending allocation starts about 15 minutes after last job start
-  var startTime = inApp.startTime + 30 * minute + Math.random() * 10 * minute;
-  var finishTime = startTime + 10 * minute + Math.random() * 10 * minute;
+  var startTime = inApp.startTime + 30 * minute + Math.seededRandom() * 10 * minute;
+  var finishTime = startTime + 10 * minute + Math.seededRandom() * 10 * minute;
 
   var partitions = {};
   for (i = 0; i < 1; i++) {  // second one must be different from first one
-    var p = 'p' + parseInt(Math.random() * 10) % Object.keys(partitionPool).length;
+    var p = 'p' + parseInt(Math.seededRandom() * 10) % Object.keys(partitionPool).length;
     var remaining = partitionPool[p].length - partitionUsage[p];
-    var usage = Math.floor(Math.random() * 10) % 2 + 1;  // get 1 or 2
+    var usage = Math.floor(Math.seededRandom() * 10) % 2 + 1;  // get 1 or 2
     usage = Math.min(remaining, usage);
     // usage = Math.floor(remaining / 2);  // get half of remaining nodes
     if (usage > 0) {
@@ -238,9 +255,9 @@ function getAppsFromCapturedData() {
   for (var i in capturedData.apps) {
     var app = capturedData.apps[i];
     var now = new Date().getTime();
-    app.startTime = now - (15 * minute + Math.random() * 5 * minute);
+    app.startTime = now - (15 * minute + Math.seededRandom() * 5 * minute);
     if (i % 2 === 0) {
-      app.finishTime = now + 5 * minute + Math.random() *  minute;
+      app.finishTime = now + 5 * minute + Math.seededRandom() *  minute;
       if (app.finishTime > maxAppFinishTime) {
         maxAppFinishTime = app.finishTime;
       }
@@ -262,7 +279,7 @@ function getAppsFromCapturedData() {
     if ('containers' in app) {
       for (var j in app.containers) {
         var container = app.containers[j];
-        var offset = (Number(j) === 0) ? 0 : Math.random() * 3 * minute;
+        var offset = (Number(j) === 0) ? 0 : Math.seededRandom() * 3 * minute;
         container.creationTime = app.startTime - offset;
       }
     }
@@ -300,7 +317,7 @@ function restartOneApp(appIdx) {
   var newNodes = [];
   var n;
   for (n in app.ranNodes) {
-    if (Math.floor(Math.random() * 2) === 0) {
+    if (Math.floor(Math.seededRandom() * 2) === 0) {
       // console.log('reuse', app.ranNodes[n])
       newNodes.push(app.ranNodes[n]);
     } else {
