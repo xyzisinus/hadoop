@@ -67,7 +67,7 @@ var timelineHeight = 130;
 // they show up on the bar like zebra stripes. each app has a small slice
 // of its color and the pattern repeats to cover the interval.  The
 // following controls the width of each slice.
-var pixelsPerSlice = 20;  // width of a slice
+var pixelsPerSlice = 10;  // width of a slice
 var intervalPerSlice = 0;  // how much time elapsed withing the slice
 
 var appSeriesPrefix = 'Atlas_app_';
@@ -598,7 +598,7 @@ function buildNodesUsage() {
     $.each(apps, function(appId, app) {
       var duration = app.nodesOccupied[n];
       if (duration !== undefined) {
-        buildRackUsage(data, duration[0], duration[1], appId);
+        data = buildRackUsage(data, duration[0], duration[1], appId);
         timeWindowMin = (timeWindowMin === 0) ? duration[0] :
           Math.min(duration[0], timeWindowMin);
         timeWindowMax = Math.max(duration[1], timeWindowMax);
@@ -624,9 +624,8 @@ function buildNodesUsage() {
     timeWindowMin =  chart.yAxis[0].getExtremes().min;
     timeWindowMax =  chart.yAxis[0].getExtremes().max;
   }
-  var chartWidth = (chart === null) ? $('#chart_container').width() : chart.width;
   intervalPerSlice = (timeWindowMax - timeWindowMin) /
-    chartWidth * pixelsPerSlice;
+    $('#chart_container').width() * pixelsPerSlice;
 }
 
 function makeSeriesForOneRack(rackId) {
@@ -700,12 +699,13 @@ function buildRackUsage(inData, start, finish, appId) {
   // both = -1 if data is empty.
   // console.log('range affected', startTime, finishTime, startIdx, endIdx);
 
-  var appSet = {}
-  appSet[appId] = ''
+  var newAppSet = {};
+  newAppSet[appId] = ' ';
+
   if (startIdx === -1 || endIdx === -1) {
     newInterval = {from: startTime,
                    to: finishTime,
-                   appSet: appSet,
+                   appSet: newAppSet,
                    value: value};
     data.splice(((endIdx !== -1) ? endIdx + 1 : 0), 0, newInterval);
     // console.log('simple insert');
@@ -719,7 +719,7 @@ function buildRackUsage(inData, start, finish, appId) {
     // split interval into two.  First part is not in start/finish range
     newInterval = {from: startTime,
                    to: interval.to,
-                   appSet: {},
+                   appSet: interval.appSet,
                    value: interval.value};
     data.splice(++startIdx, 0, newInterval);
     endIdx++;  // shift end index as well
@@ -732,7 +732,7 @@ function buildRackUsage(inData, start, finish, appId) {
   if (finishTime < interval.to) {
     newInterval = {from: finishTime,
                    to: interval.to,
-                   appSet: {},
+                   appSet: interval.appSet,
                    value: interval.value};
     data.splice(endIdx + 1, 0, newInterval);
     interval.to = finishTime;
@@ -749,19 +749,23 @@ function buildRackUsage(inData, start, finish, appId) {
   for (i = range.length - 1; i >= 0; i--) {
     // console.log('before increment', i, range[i]);
     range[i].value += value;
+    if (appId !== undefined) {
+      range[i].appSet[appId] = ' ';  // add appId, value not important
+    }
 
     if (i === range.length - 1 && finishTime > range[i].to) {
       newInterval = {from: range[i].to,
                      to: finishTime,
-                     appSet: {},
-                     value: value};
+                     appSet: newAppSet,
+                     value: value}
+      newInterval.appSet[appId] = ' ';
       range.push(newInterval);  // add at the end
       // console.log('push', i, newInterval);
     }
     if (i > 0 && range[i - 1].to < range[i].from) {  // fill gap in between
       newInterval = {from: range[i - 1].to,
                      to: range[i].from,
-                     appSet: {},
+                     appSet: newAppSet,
                      value: value};
       range.splice(i, 0, newInterval);
       // console.log('fill gap', i, newInterval);
@@ -769,7 +773,7 @@ function buildRackUsage(inData, start, finish, appId) {
     if (i === 0 && startTime < range[i].from) {
       newInterval = {from: startTime,
                      to: range[i].from,
-                     appSet: {},
+                     appSet: newAppSet,
                      value: value};
       range.unshift(newInterval);  // insert at the beginning
       // console.log('unshift', i, newInterval);
@@ -778,22 +782,15 @@ function buildRackUsage(inData, start, finish, appId) {
   if (range.length === 0) {  // start/finish range falls in a gap
     newInterval = {from: startTime,
                    to: finishTime,
-                   appSet: {},
+                   appSet: newAppSet,
                    value: value};
     range.push(newInterval);
     // console.log('only one', newInterval);
   }
 
   // xxx make sure my understanding of my own code is correct
-  assert(range[0].from === startTime &&
+  console.assert(range[0].from === startTime &&
          range[range.length - 1].to === finishTime, 'range assumption broken');
-
-  // add appId, if any, into the resulting intervas
-  if (appId !== undefined) {
-    for (var r in range) {
-      range[r].appSet[appId] = ' ';  // don't care about the value
-    }
-  }
 
   // merge two touching intervals that have the same value and same appset.
   // This can happen ONLY at either end of the range
@@ -829,7 +826,6 @@ function makeSeriesForOneApp(appId) {
 
     // go through each duration segment on the node
     $.each(nodeCollection[n].appUsage, function(d, duration) {
-      // console.log("app and duration", appId, duration.from, duration.to);
       if (!(appId in duration.appSet)) {  // not used by the app
         return true;
       }
@@ -840,21 +836,21 @@ function makeSeriesForOneApp(appId) {
 
       // the time interval covered by all apps in the duration segment
       var nAppsSharing = Object.keys(duration.appSet).length;
-      var stride = (nAppsSharing === 1) ? (duration.to - duration.from) :
-        (Object.keys(duration.appSet).length * intervalPerSlice);
-      var currentPos = duration.from;
-      // console.log("current", stride, currentPos, orderInSet);
-      do {
-        currentPos += orderInSet * intervalPerSlice;
-        var currentPosEnd = (nAppsSharing === 1) ? (currentPos + stride) :
+      var loopCount = 0;
+      while (true) {
+        var currentPos = duration.from + ((nAppsSharing === 1) ? 0 :
+          (intervalPerSlice * (loopCount * nAppsSharing + orderInSet)));
+        var currentPosEnd = (nAppsSharing === 1) ? duration.to :
           Math.min(currentPos + intervalPerSlice, duration.to);
-        // console.log("from to", currentPos, currentPosEnd);
         var slice = {x: nodeCollection[n].categoryIdx,
                      low: currentPos,
                      high: currentPosEnd};
         dataSet.push(slice);
-        currentPos += stride;
-      } while (currentPos < duration.to);
+        if (currentPosEnd >= duration.to) {
+          break;
+        }
+        loopCount++;
+      }
     });
   });
 
