@@ -940,11 +940,11 @@ function addRackButtons() {
       rack.button = button;
       button.appendTo($('body'));
       // buttons on hadoop pages have no border.  add one
-      button.css({"border-color": "black",
-                  "border-radius": "5px",
-                  "border-width": "1px",
-                  "font-family": "monospace",
-                  "border-style": "solid"});
+      button.css({'border-color': 'black',
+                  'border-radius': '5px',
+                  'border-width': '1px',
+                  'font-family': 'monospace',
+                  'border-style': 'solid'});
 
       // position the button below rack name and center it
       var labelW = $(label)[0].getBoundingClientRect().width;
@@ -1215,30 +1215,30 @@ function createTimeline() {
 
   // buttons to select view window
   var view_window = $('<input />',{
-    type: "radio",
-    id: "timeline_window_all",
-    name: "timeline_window",
-    value : "all"
+    type: 'radio',
+    id: 'timeline_window_all',
+    name: 'timeline_window',
+    value : 'all'
   });
-  view_window.prop('checked', true).appendTo(timelineBox).after("all");
+  view_window.prop('checked', true).appendTo(timelineBox).after('all');
   $('<input />',{
-    type: "radio",
-    id: "timeline_window_week",
-    name: "timeline_window",
-    value : "week"
-  }).appendTo(timelineBox).after("week");
+    type: 'radio',
+    id: 'timeline_window_week',
+    name: 'timeline_window',
+    value : 'week'
+  }).appendTo(timelineBox).after('week');
   $('<input />',{
-    type: "radio",
-    id: "timeline_window_day",
-    name: "timeline_window",
-    value : "day"
-  }).appendTo(timelineBox).after("day");
+    type: 'radio',
+    id: 'timeline_window_day',
+    name: 'timeline_window',
+    value : 'day'
+  }).appendTo(timelineBox).after('day');
   $('<input />',{
-    type: "radio",
-    id: "timeline_window_hour",
-    name: "timeline_window",
-    value : "hour"
-  }).appendTo(timelineBox).after("hour");
+    type: 'radio',
+    id: 'timeline_window_hour',
+    name: 'timeline_window',
+    value : 'hour'
+  }).appendTo(timelineBox).after('hour');
   $('input:radio[name="timeline_window"]').change(function() {
     var value = $(this).val();
     console.log('radio button', value);
@@ -1299,8 +1299,8 @@ var downloadLink = null;
 function dumpData(inData) {
   var date = new Date();
   var hours = date.getHours();
-  var minutes = "0" + date.getMinutes();
-  var seconds = "0" + date.getSeconds();
+  var minutes = '0' + date.getMinutes();
+  var seconds = '0' + date.getSeconds();
   var formattedTime = hours + ':' + minutes.substr(-2) + ':' + seconds.substr(-2);
   var header = formattedTime + ': ' + errorMsgToDump;
   errorMsgToDump = '';
@@ -1326,7 +1326,7 @@ function intervalToHms(d) {
   var h = Math.floor(d / 3600);
   var m = Math.floor(d % 3600 / 60);
   var s = Math.floor(d % 3600 % 60);
-  return ((h > 0 ? h + ":" + (m < 10 ? "0" : "") : "") + m + ":" + (s < 10 ? "0" : "") + s);
+  return ((h > 0 ? h + ':' + (m < 10 ? '0' : '') : '') + m + ':' + (s < 10 ? '0' : '') + s);
 }
 
 function timestampToDate(d) {
