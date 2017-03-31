@@ -36,9 +36,6 @@ var racks = [];  // sorted short rack id
 function rackInfo(rackId) {
   this.id = rackId;
 }
-rackInfo.prototype.kind = function() {
-  return 'rack';
-};
 rackInfo.prototype.seriesId = function() {
   return 'Atlas_rack_' + this.id;
 };
@@ -535,43 +532,6 @@ function processNodes(inNodes) {
 
 ///// data related chart ops /////
 
-function makeCollapsedRackSeries(type, rack, data) {
-  var dataSet = [];
-  var b = rack.categoryIdx + 0.5;
-  var nNodes = rack.nodes.length;
-  for (var i = 0; i < data.length; i++) {
-    var h = b - Number(data[i].value) / Number(nNodes) * collapsedRackMultiple;
-    // console.log('height', h, b, data[i].value);
-
-    if (i > 0) { // not the first interval
-      if (data[i].from === data[i-1].to) {
-        dataSet.pop();  // merge two intervals into one polygon
-      } else {
-        dataSet.push([null, null]);  // add a separator
-        dataSet.push([b, data[i].from]);
-      }
-    } else {
-      dataSet.push([b, data[i].from]);
-    }
-    dataSet.push([h, data[i].from]);
-    dataSet.push([h, data[i].to]);
-    dataSet.push([b, data[i].to]);
-  }
-
-  var rackSeries = {
-    type: 'polygon',
-    showInLegend: false,
-    id: rack.seriesId(type),
-    name: rack.seriesId(type),
-    // enableMouseTracking: false,
-    shadow: true,
-    color: rack.seriesColor(type),
-    data: dataSet
-  };
-
-  return (dataSet.length === 0) ? null: rackSeries;
-}
-
 // mainly deal with overlapping usage of apps on a node.
 // for each node, find apps using it and cut usage into intervals each
 // of which is shared by the same set of apps.
@@ -580,7 +540,7 @@ function buildNodesUsage() {
   var timeWindowMax = 0;
   var haveNewData = false;
 
-  for (appId in apps) {
+  for (var appId in apps) {
     haveNewData |= apps[appId].hasNewData;
   }
   if (!haveNewData) {  // nothing has changed
@@ -598,7 +558,7 @@ function buildNodesUsage() {
     $.each(apps, function(appId, app) {
       var duration = app.nodesOccupied[n];
       if (duration !== undefined) {
-        data = buildRackUsage(data, duration[0], duration[1], appId);
+        data = accumulateUsage(data, appId, duration[0], duration[1]);
         timeWindowMin = (timeWindowMin === 0) ? duration[0] :
           Math.min(duration[0], timeWindowMin);
         timeWindowMax = Math.max(duration[1], timeWindowMax);
@@ -609,8 +569,8 @@ function buildNodesUsage() {
     // if an app has new data, all apps sharing the interval has new data
     $.each(apps, function(appId, app) {
       for (var d in data) {
-        if (appId in data[d].appSet) {
-          for (var a in data[d].appSet) {
+        if (appId in data[d].sharerSet) {
+          for (var a in data[d].sharerSet) {
             app.hasNewData |= apps[a].hasNewData;
           }
         }
@@ -638,29 +598,63 @@ function makeSeriesForOneRack(rackId) {
       var nodeId = rack.nodes[n];
       if (nodeId in app.nodesOccupied) {
         var duration = app.nodesOccupied[nodeId];
-        data = buildRackUsage(data, duration[0], duration[1]);
+        data = accumulateUsage(data, nodeId, duration[0], duration[1]);
       }
     }
   }
 
-  return makeCollapsedRackSeries(rack.kind(), rack, data);
+  var dataSet = [];
+  var b = rack.categoryIdx + 0.5;
+  var nNodes = rack.nodes.length;
+  for (var i = 0; i < data.length; i++) {
+    console.log('sharers', data[i].sharerSet);
+    var nUsed = Object.keys(data[i].sharerSet).length;
+    var h = b - Number(nUsed) / Number(nNodes) * collapsedRackMultiple;
+    // console.log('height', h, b, nNodes);
+
+    if (i > 0) { // not the first interval
+      if (data[i].from === data[i-1].to) {
+        dataSet.pop();  // merge two intervals into one polygon
+      } else {
+        dataSet.push([null, null]);  // add a separator
+        dataSet.push([b, data[i].from]);
+      }
+    } else {
+      dataSet.push([b, data[i].from]);
+    }
+    dataSet.push([h, data[i].from]);
+    dataSet.push([h, data[i].to]);
+    dataSet.push([b, data[i].to]);
+  }
+
+  var rackSeries = {
+    type: 'polygon',
+    showInLegend: false,
+    id: rack.seriesId(),
+    name: rack.seriesId(),
+    shadow: true,
+    color: rack.seriesColor(),
+    data: dataSet
+  };
+
+  return (dataSet.length === 0) ? null: rackSeries;
 }
 
-function buildRackUsage(inData, start, finish, appId) {
+// Can be used to build usage for a rack (how many nodes are sharing each
+// time interval, or for a node (what apps are sharing the node).
+function accumulateUsage(inData, sharerId, start, finish) {
   var data = inData;
   var newInterval = null;
   var interval = null;
   var i = 0;
   var startIdx = -1;
   var endIdx = -1;
-  var value = 1;
 
   var startTime = start;
   var finishTime = finish;
 
-  // each resulting data interval is to/from/value/appSet(optional).
-  // value is how many nodes are used in the interval or how many apps
-  // are sharing a node.
+  // the resulting data interval is {from, too, sharerSet}
+  // sharerSet can be a set of nodes or apps, depending who's calling.
 
   // first, search for intervals that will be affected.
   // start/endIdx are the indices of the resulting range.
@@ -699,14 +693,13 @@ function buildRackUsage(inData, start, finish, appId) {
   // both = -1 if data is empty.
   // console.log('range affected', startTime, finishTime, startIdx, endIdx);
 
-  var newAppSet = {};
-  newAppSet[appId] = ' ';
+  var newSharerSet = {};
+  newSharerSet[sharerId] = ' ';
 
   if (startIdx === -1 || endIdx === -1) {
     newInterval = {from: startTime,
                    to: finishTime,
-                   appSet: newAppSet,
-                   value: value};
+                   sharerSet: newSharerSet};
     data.splice(((endIdx !== -1) ? endIdx + 1 : 0), 0, newInterval);
     // console.log('simple insert');
     return data;
@@ -719,8 +712,7 @@ function buildRackUsage(inData, start, finish, appId) {
     // split interval into two.  First part is not in start/finish range
     newInterval = {from: startTime,
                    to: interval.to,
-                   appSet: interval.appSet,
-                   value: interval.value};
+                   sharerSet: interval.sharerSet};
     data.splice(++startIdx, 0, newInterval);
     endIdx++;  // shift end index as well
     interval.to = startTime;
@@ -732,8 +724,7 @@ function buildRackUsage(inData, start, finish, appId) {
   if (finishTime < interval.to) {
     newInterval = {from: finishTime,
                    to: interval.to,
-                   appSet: interval.appSet,
-                   value: interval.value};
+                   sharerSet: interval.sharerSet};
     data.splice(endIdx + 1, 0, newInterval);
     interval.to = finishTime;
     // console.log('split end piece at endIdx', tmp, data[endIdx], data[endIdx+1]);
@@ -748,33 +739,26 @@ function buildRackUsage(inData, start, finish, appId) {
   // of the range.  loop backward to avoid index shifting
   for (i = range.length - 1; i >= 0; i--) {
     // console.log('before increment', i, range[i]);
-    range[i].value += value;
-    if (appId !== undefined) {
-      range[i].appSet[appId] = ' ';  // add appId, value not important
-    }
+    range[i].sharerSet[sharerId] = ' ';  // add sharer, value not important
 
     if (i === range.length - 1 && finishTime > range[i].to) {
       newInterval = {from: range[i].to,
                      to: finishTime,
-                     appSet: newAppSet,
-                     value: value}
-      newInterval.appSet[appId] = ' ';
+                     sharerSet: newSharerSet};
       range.push(newInterval);  // add at the end
       // console.log('push', i, newInterval);
     }
     if (i > 0 && range[i - 1].to < range[i].from) {  // fill gap in between
       newInterval = {from: range[i - 1].to,
                      to: range[i].from,
-                     appSet: newAppSet,
-                     value: value};
+                     sharerSet: newSharerSet};
       range.splice(i, 0, newInterval);
       // console.log('fill gap', i, newInterval);
     }
     if (i === 0 && startTime < range[i].from) {
       newInterval = {from: startTime,
                      to: range[i].from,
-                     appSet: newAppSet,
-                     value: value};
+                     sharerSet: newSharerSet};
       range.unshift(newInterval);  // insert at the beginning
       // console.log('unshift', i, newInterval);
     }
@@ -782,8 +766,7 @@ function buildRackUsage(inData, start, finish, appId) {
   if (range.length === 0) {  // start/finish range falls in a gap
     newInterval = {from: startTime,
                    to: finishTime,
-                   appSet: newAppSet,
-                   value: value};
+                   sharerSet: newSharerSet};
     range.push(newInterval);
     // console.log('only one', newInterval);
   }
@@ -796,16 +779,14 @@ function buildRackUsage(inData, start, finish, appId) {
   // This can happen ONLY at either end of the range
   if (before.length !== 0 &&
       before[before.length - 1].to === range[0].from &&
-      before[before.length - 1].value === range[0].value &&
-      dictionariesEqual(before[before.length - 1].appSet, range[0].appSet)) {
+      dictionariesEqual(before[before.length - 1].sharerSet, range[0].sharerSet)) {
     // console.log('merge first', before[before.length - 1], range[0]);
     range[0].from = before[before.length - 1].from;
     before.pop();
   }
   if (after.length !== 0 &&
       after[0].from === range[range.length - 1].to &&
-      after[0].value === range[range.length - 1].value &&
-      dictionariesEqual(after[0].appSet, range[range.length - 1].appSet)) {
+      dictionariesEqual(after[0].sharerSet, range[range.length - 1].sharerSet)) {
     // console.log('merge last', range[range.length - 1], after[0]);
     after[0].from = range[range.length - 1].from;
     range.pop();
@@ -826,16 +807,16 @@ function makeSeriesForOneApp(appId) {
 
     // go through each duration segment on the node
     $.each(nodeCollection[n].appUsage, function(d, duration) {
-      if (!(appId in duration.appSet)) {  // not used by the app
+      if (!(appId in duration.sharerSet)) {  // not used by the app
         return true;
       }
 
       // get app's order in the set of apps using this duration
       // to ensure the pattern of colored slice is consistent
-      var orderInSet = Object.keys(duration.appSet).sort().indexOf(appId);
+      var orderInSet = Object.keys(duration.sharerSet).sort().indexOf(appId);
 
       // the time interval covered by all apps in the duration segment
-      var nAppsSharing = Object.keys(duration.appSet).length;
+      var nAppsSharing = Object.keys(duration.sharerSet).length;
       var loopCount = 0;
       while (true) {
         var currentPos = duration.from + ((nAppsSharing === 1) ? 0 :
