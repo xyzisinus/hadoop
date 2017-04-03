@@ -255,6 +255,7 @@ function makeChart() {
 
     plotOptions: {
       columnrange: {
+        borderWidth: 0,
         stacking: 'normal'
       },
       series: {
@@ -358,7 +359,7 @@ function updateChart(categoriesChanged) {
   for (var appId in apps) {
     var app = apps[appId];
     var seriesId = apps[appId].seriesId;
-    if (app.hasNewData || layoutChanged) {
+    if (app.haveNewData || layoutChanged) {
       needRedraw = true;
       var appSeries = makeSeriesForOneApp(appId);
       if (appSeries.data.length !== 0) {
@@ -411,7 +412,6 @@ function updateAppState(inApp, nodesOccupied, finished) {
   var id = inApp.applicationId;
   if (id in apps && apps[id].finished) {
     // now we know the app is finished from previous rounds
-    apps[id].hasNewData = false;
     return;
   }
 
@@ -424,7 +424,7 @@ function updateAppState(inApp, nodesOccupied, finished) {
   var app = apps[id];
 
   app.finished = finished;
-  app.hasNewData = true;
+  app.haveNewData = true;
   app.startTime = inApp.startTime;
   var finishTime = Number(inApp.finishTime);
   if (finishTime === 0) {
@@ -541,7 +541,7 @@ function buildNodesUsage() {
   var haveNewData = false;
 
   for (var appId in apps) {
-    haveNewData |= apps[appId].hasNewData;
+    haveNewData |= apps[appId].haveNewData;
   }
   if (!haveNewData) {  // nothing has changed
     return;
@@ -571,7 +571,7 @@ function buildNodesUsage() {
       for (var d in data) {
         if (appId in data[d].sharerSet) {
           for (var a in data[d].sharerSet) {
-            app.hasNewData |= apps[a].hasNewData;
+            app.haveNewData |= apps[a].haveNewData;
           }
         }
       }
@@ -586,6 +586,7 @@ function buildNodesUsage() {
   }
   intervalPerSlice = (timeWindowMax - timeWindowMin) /
     $('#chart_container').width() * pixelsPerSlice;
+  console.log('per slice in node usage', intervalPerSlice);
 }
 
 function makeSeriesForOneRack(rackId) {
@@ -607,7 +608,6 @@ function makeSeriesForOneRack(rackId) {
   var b = rack.categoryIdx + 0.5;
   var nNodes = rack.nodes.length;
   for (var i = 0; i < data.length; i++) {
-    console.log('sharers', data[i].sharerSet);
     var nUsed = Object.keys(data[i].sharerSet).length;
     var h = b - Number(nUsed) / Number(nNodes) * collapsedRackMultiple;
     // console.log('height', h, b, nNodes);
@@ -811,26 +811,29 @@ function makeSeriesForOneApp(appId) {
         return true;
       }
 
-      // get app's order in the set of apps using this duration
-      // to ensure the pattern of colored slice is consistent
+      // present app slices sorted on appId, for consistent color patterns
       var orderInSet = Object.keys(duration.sharerSet).sort().indexOf(appId);
 
-      // the time interval covered by all apps in the duration segment
       var nAppsSharing = Object.keys(duration.sharerSet).length;
-      var loopCount = 0;
+      var stride = (nAppsSharing === 1) ? (duration.to - duration.from) :
+        (intervalPerSlice * nAppsSharing);
+      var strideCount = 0;
+
       while (true) {
-        var currentPos = duration.from + ((nAppsSharing === 1) ? 0 :
-          (intervalPerSlice * (loopCount * nAppsSharing + orderInSet)));
+        var currentPos = duration.from + stride * strideCount +
+          intervalPerSlice * orderInSet;
         var currentPosEnd = (nAppsSharing === 1) ? duration.to :
           Math.min(currentPos + intervalPerSlice, duration.to);
+
+        if (currentPos >= duration.to) {
+          break;
+        }
+
         var slice = {x: nodeCollection[n].categoryIdx,
                      low: currentPos,
                      high: currentPosEnd};
         dataSet.push(slice);
-        if (currentPosEnd >= duration.to) {
-          break;
-        }
-        loopCount++;
+        strideCount++;
       }
     });
   });
@@ -846,6 +849,7 @@ function makeSeriesForOneApp(appId) {
     name: appId,
     data: dataSet
   };
+  apps[appId].haveNewData = false;
 
   // no category touched by app. it can happen with rack collapse
   return appSeries;  // data can be emtpy, like []
@@ -1123,12 +1127,20 @@ function onSelect(info) {
   if (!info.byUser) return;
   chartMinMax = [info.start, info.end];
   chart.yAxis[0].setExtremes(info.start, info.end);
-  // chart.yAxis[0].setExtremes(null, null);  // resume auto setting min/max
+  intervalPerSlice = (info.end - info.start) /
+    $('#chart_container').width() * pixelsPerSlice;
+  console.log('per slice', intervalPerSlice);
 }
 
 function onDoubleClick(info) {
   chartMinMax = [null, null];
   chart.yAxis[0].setExtremes(null, null);  // resume auto setting min/max
+
+  timeWindowMin =  chart.yAxis[0].getExtremes().min;
+  timeWindowMax =  chart.yAxis[0].getExtremes().max;
+  intervalPerSlice = (timeWindowMax - timeWindowMin) /
+    $('#chart_container').width() * pixelsPerSlice;
+  console.log('per slice', intervalPerSlice);
 }
 
 function createTimeline() {
