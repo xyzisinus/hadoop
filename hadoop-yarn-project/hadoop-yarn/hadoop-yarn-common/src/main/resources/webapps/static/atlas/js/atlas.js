@@ -271,14 +271,14 @@ function makeChart() {
   processTimeline();
 }
 
-function updateChart(categoriesChanged) {
+function updateChart(cause) {
   var needRedraw = false;
   var layoutChanged = false;
   var min = chart.yAxis[0].getExtremes().min;
   var max = chart.yAxis[0].getExtremes().max;
 
   var rack, rackId;
-  if (categoriesChanged !== undefined) {
+  if (cause === 'categoriesChanged') {
     // this update is caused by rack collapse/expand
     var bandIds = [];
     var lineIds = [];
@@ -359,7 +359,7 @@ function updateChart(categoriesChanged) {
   for (var appId in apps) {
     var app = apps[appId];
     var seriesId = apps[appId].seriesId;
-    if (app.haveNewData || layoutChanged) {
+    if (app.haveNewData || layoutChanged || cause === 'timescaleChanged') {
       needRedraw = true;
       var appSeries = makeSeriesForOneApp(appId);
       if (appSeries.data.length !== 0) {
@@ -384,7 +384,7 @@ function updateChart(categoriesChanged) {
   // window and set it.  If the update is cause  by data refresh, then we
   // set the default back to "let highchart decide".
   if (chartMinMax[0] === null) {  // time window not set by timeline
-    if (categoriesChanged) {  // update caused by rack collapse/expand.
+    if (cause != undefined) {  // update by rack collapse/expand or timescale change
       chart.yAxis[0].setExtremes(min, max);  // set to saved size
     } else {  // caused by data refresh
       chart.yAxis[0].setExtremes(null, null);  // let highchart decide
@@ -1123,13 +1123,22 @@ function processTimeline() {
   updateNowLine();
 }
 
+// when timeline changes, the multi-app nodes may need to redraw
+// when the timescale changes too much (more than 10%)
+function considerUpdate(timescaleMin, timescaleMax) {
+  newInterval = (timescaleMax - timescaleMin) /
+    $('#chart_container').width() * pixelsPerSlice;
+  if (Math.abs(newInterval - intervalPerSlice) / intervalPerSlice > 0.1) {
+    intervalPerSlice = newInterval;
+    updateChart('timescaleChanged');
+  }
+}
+
 function onSelect(info) {
   if (!info.byUser) return;
   chartMinMax = [info.start, info.end];
   chart.yAxis[0].setExtremes(info.start, info.end);
-  intervalPerSlice = (info.end - info.start) /
-    $('#chart_container').width() * pixelsPerSlice;
-  console.log('per slice', intervalPerSlice);
+  considerUpdate(info.start, info.end);
 }
 
 function onDoubleClick(info) {
@@ -1138,9 +1147,7 @@ function onDoubleClick(info) {
 
   timeWindowMin =  chart.yAxis[0].getExtremes().min;
   timeWindowMax =  chart.yAxis[0].getExtremes().max;
-  intervalPerSlice = (timeWindowMax - timeWindowMin) /
-    $('#chart_container').width() * pixelsPerSlice;
-  console.log('per slice', intervalPerSlice);
+  considerUpdate(timeWindowMin, timeWindowMax);
 }
 
 function createTimeline() {
