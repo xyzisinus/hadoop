@@ -381,10 +381,10 @@ function updateChart(cause) {
   // chart time window: if not set by timeline, highchart decides by default.
   // With rack collapse/expend, highchart's redraw may shift its viewing
   // time window.  To keep the window stable, we record the current time
-  // window and set it.  If the update is cause  by data refresh, then we
+  // window and set it.  If the update is caused by data refresh, then we
   // set the default back to "let highchart decide".
   if (chartMinMax[0] === null) {  // time window not set by timeline
-    if (cause != undefined) {  // update by rack collapse/expand or timescale change
+    if (cause != undefined) {  // not caused by data refresh
       chart.yAxis[0].setExtremes(min, max);  // set to saved size
     } else {  // caused by data refresh
       chart.yAxis[0].setExtremes(null, null);  // let highchart decide
@@ -1126,7 +1126,7 @@ function processTimeline() {
 // when timeline changes, the multi-app nodes may need to redraw
 // when the timescale changes too much (more than 10%)
 function considerUpdate(timescaleMin, timescaleMax) {
-  newInterval = (timescaleMax - timescaleMin) /
+  var newInterval = (timescaleMax - timescaleMin) /
     $('#chart_container').width() * pixelsPerSlice;
   if (Math.abs(newInterval - intervalPerSlice) / intervalPerSlice > 0.1) {
     intervalPerSlice = newInterval;
@@ -1136,18 +1136,35 @@ function considerUpdate(timescaleMin, timescaleMax) {
 
 function onSelect(info) {
   if (!info.byUser) return;
-  chartMinMax = [info.start, info.end];
-  chart.yAxis[0].setExtremes(info.start, info.end);
-  considerUpdate(info.start, info.end);
+
+  // if simplying using the start/end points given by timeline, the
+  // re-scaled chart may be off-center or even out of the viewing window.
+  // here we distinguish the scale change (vs sliding change) and try to
+  // scale both ends of the chart evenly.
+
+  var timeWindowMin =  chart.yAxis[0].getExtremes().min;
+  var timeWindowMax =  chart.yAxis[0].getExtremes().max;
+  var oldInterval = timeWindowMax - timeWindowMin;
+  var newInterval = info.end - info.start;
+  var scaleChange = (oldInterval - newInterval) / oldInterval;
+
+  if (Math.abs(scaleChange) > 0.1) {  // scale change, not sliding change
+    timeWindowMin += (oldInterval - newInterval) / 2;
+    timeWindowMax -= (oldInterval - newInterval) / 2;
+  } else {
+    timeWindowMin = info.start;
+    timeWindowMax = info.end;
+  }
+
+  chart.yAxis[0].setExtremes(timeWindowMin, timeWindowMax);
+  considerUpdate(timeWindowMin, timeWindowMax);
 }
 
 function onDoubleClick(info) {
   chartMinMax = [null, null];
   chart.yAxis[0].setExtremes(null, null);  // resume auto setting min/max
-
-  timeWindowMin =  chart.yAxis[0].getExtremes().min;
-  timeWindowMax =  chart.yAxis[0].getExtremes().max;
-  considerUpdate(timeWindowMin, timeWindowMax);
+  considerUpdate(chart.yAxis[0].getExtremes().min,
+                 chart.yAxis[0].getExtremes().max);
 }
 
 function createTimeline() {
