@@ -31,6 +31,14 @@ var series = [];
 
 var nodesProcessed = false;
 var nodeCollection = {};  // node id -> app usage, state, categoriesIdx, etc
+function nodeInfo(fullId) {
+  this.fullId = fullId;
+  this.id = fullId.split('.')[0];  // e.g. get node4 in node4.example.com
+  this.categoryIdx = -1;
+  // [start, finish, load, appSet] chronologically ordered intervals
+  this.appUsage = [];
+}
+
 var rackCollection = {};  // rack id -> nodes, expanding state, etc
 var racks = [];  // sorted short rack id
 function rackInfo(rackId) {
@@ -408,7 +416,7 @@ function intervalsOverlap(d1, d2) {
 
 // update app state and save the current dataset for the app.
 // Note: finished app has an empty list of nodesInUse argument.
-function updateAppState(inApp, nodesOccupied, finished) {
+function updateAppState(inApp, nodesInUse, finished) {
   var id = inApp.applicationId;
   if (id in apps && apps[id].finished) {
     // now we know the app is finished from previous rounds
@@ -417,7 +425,7 @@ function updateAppState(inApp, nodesOccupied, finished) {
 
   if (!(id in apps)) {  // make new app entry
     apps[id] = {};
-    apps[id].nodesOccupied = {};
+    apps[id].nodesInUse = {};
     apps[id].seriesId = appSeriesPrefix + id;
     apps[id].color = null;
   }
@@ -432,18 +440,18 @@ function updateAppState(inApp, nodesOccupied, finished) {
     currentTimeUsed = true;
   }
   app.serverState = inApp.state;
-  app.nContainers = Object.keys(nodesOccupied).length;
+  app.nContainers = Object.keys(nodesInUse).length;
 
   // go through the nodes used and record the duration of their use.
   // If a node is already on record, only change its finishTime.
   // xxx need to consider multiple apps on the same node.
-  $.each(nodesOccupied, function(n, duration) {
-    if (n in app.nodesOccupied) {
+  $.each(nodesInUse, function(n, duration) {
+    if (n in app.nodesInUse) {
       // xxx add two asserts: start time remains same and there is only one
       // time section
-      app.nodesOccupied[n][1] = duration[1];
+      app.nodesInUse[n][1] = duration[1];
     } else {
-      app.nodesOccupied[n] = [duration[0], duration[1]];
+      app.nodesInUse[n] = [duration[0], duration[1]];
     }
   });
 }
@@ -451,7 +459,7 @@ function updateAppState(inApp, nodesOccupied, finished) {
 function processApps(inApps) {
   $.each(inApps, function(index, inApp) {
     var finishedApp = false;
-    var nodesOccupied = {};  // node -> [startTime, finishTime]
+    var nodesInUse = {};  // node -> [startTime, finishTime]
     var finishTime = 0;
 
     if (inApp.state === 'FINISHED') {
@@ -467,18 +475,16 @@ function processApps(inApps) {
       console.log('invalid app state:', inApp.applicationId. inApp.state);
       return true;  // still continue processing apps
     } else {
-      for (var ranNodeIdx in inApp.ranNodes) {
-        var nodeId = inApp.ranNodes[ranNodeIdx].split('.')[0];
-        var container = inApp.containers[ranNodeIdx];
-
-        startTime = inApp.containers[ranNodeIdx].creationTime;
+      $.each(inApp.containers, function(c, container) {
+        startTime = container.creationTime;
         finishTime = timeInCurrentLoop;
         currentTimeUsed = true;
-        nodesOccupied[nodeId] = [startTime, finishTime];
-      }
+        var nodeId = (new nodeInfo(container.node)).id;
+        nodesInUse[nodeId] = [startTime, finishTime];
+      });
     }
 
-    updateAppState(inApp, nodesOccupied, finishedApp);
+    updateAppState(inApp, nodesInUse, finishedApp);
   });
 }
 
@@ -490,31 +496,24 @@ function processNodes(inNodes) {
   }
 
   $.each(inNodes, function(index, inNode) {
-    var nodeId = inNode.nodeId.split('.')[0];  // e.g. get node4 in node4.example.com
+    var node = new nodeInfo(inNode.nodeId);
     var rackId = inNode.rack;
     if (rackId === undefined || $.trim(rackId) === '') {
         rackId = 'undefined';  // no rack or rack name as white spaces
     } else if (inNode.rack[0] === '/') {  // common leading char in rack name string
       var rackId = rackId.substr(1);
     }
-
-    var node = {};
-    node.fullId = inNode.nodeId;
-    // node's chart category index, -1 -> rack collapsed
-    node.categoryIdx = -1;
-    // [start, finish, load, appSet] chronologically ordered intervals
-    node.appUsage = [];
-    nodeCollection[nodeId] = node;
+    nodeCollection[node.id] = node;
 
     // rackInfo is derived from node. a previous node may have built the rack
     if (rackId in rackCollection) {
-      rackCollection[rackId].nodes.push(nodeId);  // add node into rackInfo
+      rackCollection[rackId].nodes.push(node.id);  // add node into rackInfo
     } else {
       var rack = new rackInfo(rackId);
       rackCollection[rackId] = rack;
 
       rack.fullId = inNode.rack;
-      rack.nodes = [nodeId];
+      rack.nodes = [node.id];
       rack.button = null;
       rack.categoryIdx = -1;
       rack.expanded = true;
@@ -556,7 +555,7 @@ function buildNodesUsage() {
     var data = [];
 
     $.each(apps, function(appId, app) {
-      var duration = app.nodesOccupied[n];
+      var duration = app.nodesInUse[n];
       if (duration !== undefined) {
         data = accumulateUsage(data, appId, duration[0], duration[1]);
         timeWindowMin = (timeWindowMin === 0) ? duration[0] :
@@ -597,8 +596,8 @@ function makeSeriesForOneRack(rackId) {
     var app = apps[appId];
     for (var n in rack.nodes) {
       var nodeId = rack.nodes[n];
-      if (nodeId in app.nodesOccupied) {
-        var duration = app.nodesOccupied[nodeId];
+      if (nodeId in app.nodesInUse) {
+        var duration = app.nodesInUse[nodeId];
         data = accumulateUsage(data, nodeId, duration[0], duration[1]);
       }
     }
@@ -800,7 +799,7 @@ function makeSeriesForOneApp(appId) {
   var dataSet = [];
 
   // go through all nodes in use for the app
-  $.each(apps[appId].nodesOccupied, function(n, duration) {
+  $.each(apps[appId].nodesInUse, function(n, duration) {
     if (nodeCollection[n].categoryIdx === -1) {
       return true;
     }
