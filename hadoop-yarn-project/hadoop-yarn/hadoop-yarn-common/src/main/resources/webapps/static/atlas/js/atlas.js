@@ -706,27 +706,26 @@ function accumulateUsage(inData, sharerId, start, finish) {
 
   // when start/finish time is in an interval, split
   interval = data[startIdx];
-  var tmp = Object.assign({}, interval);
   if (startTime > interval.from) {
     // split interval into two.  First part is not in start/finish range
+    // also need to duplicate sharerSet for the new interval
     newInterval = {from: startTime,
                    to: interval.to,
-                   sharerSet: interval.sharerSet};
+                   sharerSet: Object.assign({}, interval.sharerSet)};
     data.splice(++startIdx, 0, newInterval);
     endIdx++;  // shift end index as well
     interval.to = startTime;
-    // console.log('split start piece', tmp, interval, newInterval);
+    // console.log('split start piece', interval, newInterval);
   }
 
   interval = data[endIdx];
-  tmp = Object.assign({}, interval);
   if (finishTime < interval.to) {
     newInterval = {from: finishTime,
                    to: interval.to,
-                   sharerSet: interval.sharerSet};
+                   sharerSet: Object.assign({}, interval.sharerSet)};
     data.splice(endIdx + 1, 0, newInterval);
     interval.to = finishTime;
-    // console.log('split end piece at endIdx', tmp, data[endIdx], data[endIdx+1]);
+    // console.log('split end piece at endIdx', data[endIdx], data[endIdx+1]);
   }
 
   // slice data into three parts: before, range, after
