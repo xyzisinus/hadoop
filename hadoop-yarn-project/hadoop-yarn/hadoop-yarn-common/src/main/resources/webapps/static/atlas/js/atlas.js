@@ -331,7 +331,7 @@ function updateChart(cause) {
 
     for (rackId in rackCollection) {
       rack = rackCollection[rackId];
-      if (chart.get(rack.seriesId()) !== null) {
+      if (chart.get(rack.seriesId()) !== undefined) {
         chart.get(rack.seriesId()).remove(false);
       }
 
@@ -364,7 +364,7 @@ function updateChart(cause) {
     if (rackSeries.data.length !== 0) {
       chartProps.haveData = true;
     }
-    if (chart.get(rack.seriesId()) === null) {
+    if (chart.get(rack.seriesId()) === undefined) {
       chart.addSeries(rackSeries, false);
     } else {
       chart.get(rack.seriesId()).setData(rackSeries.data, false);
@@ -382,7 +382,7 @@ function updateChart(cause) {
       if (appSeries.data.length !== 0) {
         chartProps.haveData = true;
       }
-      if (chart.get(seriesId) === null) {
+      if (chart.get(seriesId) === undefined) {
         chart.addSeries(appSeries, false);
       } else {
         chart.get(seriesId).setData(appSeries.data, false);
@@ -391,7 +391,7 @@ function updateChart(cause) {
   }
 
   // leave fake series there but update it to fit the new categrories
-  if (chart.get(fakeSeriesId) !== null && layoutChanged){
+  if (chart.get(fakeSeriesId) !== undefined && layoutChanged){
     chart.get(fakeSeriesId).setData(makeFakeSeries(), false);
   }
 
