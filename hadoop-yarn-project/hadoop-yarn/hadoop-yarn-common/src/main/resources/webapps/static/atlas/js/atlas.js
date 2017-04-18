@@ -41,8 +41,17 @@ function nodeInfo(fullId) {
 
 var rackCollection = {};  // rack id -> nodes, expanding state, etc
 var racks = [];  // sorted short rack id
-function rackInfo(rackId) {
-  this.id = rackId;
+function rackInfo(originalId) {
+  this.originalId = originalId;
+  this.id = originalId;
+  if (originalId === undefined || $.trim(originalId) === '') {
+    this.id = 'undefined';  // no rack or rack name is white spaces
+  } else if (originalId[0] === '/') {  // common leading char in rack name
+     this.id = originalId.substr(1);  // remove leading "/"
+  }
+  this.button = null;
+  this.categoryIdx = -1;
+  this.expanded = true;
 }
 rackInfo.prototype.seriesId = function() {
   return 'Atlas_rack_' + this.id;
@@ -497,26 +506,15 @@ function processNodes(inNodes) {
 
   $.each(inNodes, function(index, inNode) {
     var node = new nodeInfo(inNode.nodeId);
-    var rackId = inNode.rack;
-    if (rackId === undefined || $.trim(rackId) === '') {
-        rackId = 'undefined';  // no rack or rack name as white spaces
-    } else if (inNode.rack[0] === '/') {  // common leading char in rack name string
-      rackId = rackId.substr(1);  // xxx rethink
-    }
     nodeCollection[node.id] = node;
 
     // rackInfo is derived from node. a previous node may have built the rack
-    if (rackId in rackCollection) {
-      rackCollection[rackId].nodes.push(node.id);  // add node into rackInfo
+    var rack = new rackInfo(inNode.rack);
+    if (rack.id in rackCollection) {
+      rackCollection[rack.id].nodes.push(node.id);  // add node into rackInfo
     } else {
-      var rack = new rackInfo(rackId);
-      rackCollection[rackId] = rack;
-
-      rack.fullId = inNode.rack;
       rack.nodes = [node.id];
-      rack.button = null;
-      rack.categoryIdx = -1;
-      rack.expanded = true;
+      rackCollection[rack.id] = rack;
     }
   });
 
@@ -1285,13 +1283,13 @@ function positionTimeline() {
   var timelineHeight = $($timelineHtml).height();
 
   // timeline box has no height before it's actualy placed.  so give it one.
-  timelineHeight = (timelineHeight === 0) ? 90 : timelineHeight;
+  timelineHeight = 20 + ((timelineHeight === 0) ? 90 : timelineHeight);
 
   timelineBox.css('left', marginLeft + $('#chart_container').offset().left);
-  if (chartBottom + 30 < window.innerHeight) {
+  if (chartBottom + timelineHeight < window.innerHeight) {
     $timelineHtml.style.top = chartBottom + 'px';
   } else {
-    $timelineHtml.style.top = (window.innerHeight - timelineHeight - 10) + 'px';
+    $timelineHtml.style.top = (window.innerHeight - timelineHeight) + 'px';
   }
 
   // the window can be too 'high' after rack collapse that the user see
