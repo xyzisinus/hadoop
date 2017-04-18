@@ -57,10 +57,10 @@ rackInfo.prototype.changeExpandState = function(expand) {
   }
   this.expanded = expand;
   numCollapsedRacks += expand? -1 : 1;
-}
+};
 rackInfo.prototype.flipExpandState = function() {
   this.changeExpandState(!this.expanded);
-}
+};
 
 // vertical spacing
 var bandHeight = 20;
@@ -392,7 +392,7 @@ function updateChart(cause) {
   // window and set it.  If the update is caused by data refresh, then we
   // set the default back to "let highchart decide".
   if (chartMinMax[0] === null) {  // time window not set by timeline
-    if (cause != undefined) {  // not caused by data refresh
+    if (cause !== undefined) {  // not caused by data refresh
       chart.yAxis[0].setExtremes(min, max);  // set to saved size
     } else {  // caused by data refresh
       chart.yAxis[0].setExtremes(null, null);  // let highchart decide
@@ -501,7 +501,7 @@ function processNodes(inNodes) {
     if (rackId === undefined || $.trim(rackId) === '') {
         rackId = 'undefined';  // no rack or rack name as white spaces
     } else if (inNode.rack[0] === '/') {  // common leading char in rack name string
-      var rackId = rackId.substr(1);
+      rackId = rackId.substr(1);  // xxx rethink
     }
     nodeCollection[node.id] = node;
 
@@ -1104,10 +1104,9 @@ function makeTooltip(series) {
 // Called after chart creation/update
 function processTimeline() {
   if (timeline === null && chartProps.haveData) {
-    createTimeline()
+    makeTimeline();
   }
-
-  if (timeline === null) {  // still have no timeline
+  if (timeline === null) {  // no timeline => never having data
     return;
   }
 
@@ -1115,9 +1114,9 @@ function processTimeline() {
   var max = chart.yAxis[0].getExtremes().max;
   timeline.setWindow(min, max);
 
-  positionTimeline()
+  positionTimeline();
 
-  mayStartNowLine = true;
+  mayStartNowLine = true;  // now line exists only with timeline
   updateNowLine();
 }
 
@@ -1165,7 +1164,7 @@ function onDoubleClick(info) {
                  chart.yAxis[0].getExtremes().max);
 }
 
-function createTimeline() {
+function makeTimeline() {
   // create container for timeline
   timelineBox = $('<div>').appendTo($('#general_container'));
   timelineBox.attr('id', 'timelinebox');
@@ -1260,14 +1259,17 @@ function createTimeline() {
   });
 }
 
-function elt(id) {
-    return document.getElementById(id);
-}
-
 function positionTimeline() {
-  if (elt('timelinebox') === null || elt('highcharts-0') === null) {
+  if (timeline === null) {
     return;
   }
+
+  // issues here:
+  // 1. timeline should be closely placed at the bottom of the chart
+  // 2. when the window height is reduced or the window is scrolling,
+  // timeline always stays in the view port (sticky)
+  // 3. the left/right ends of the timeline should align with the data part
+  // of the chart.
 
   var marginLeft = chart.plotBox.x;
   timelineBox.css('left', marginLeft + $('#chart_container').offset().left);
@@ -1275,24 +1277,21 @@ function positionTimeline() {
   var width = $(chart.container).width() - chart.marginRight - marginLeft;
   timelineBox.width(width);
 
-  var $chart = elt('highcharts-0');
-  var $fixed = elt('timelinebox');
-  var chartBottom = $chart.getBoundingClientRect().bottom;
+  var $chartHtml = document.getElementsByClassName('highcharts-container')[0];
+  var $timelineHtml = document.getElementById('timelinebox');
+  var chartBottom = $chartHtml.getBoundingClientRect().bottom;
 
-  var HEIGHT = $('#highcharts-0').height();
-  var FIXED_HEIGHT = $('#timelinebox').height();
+  var chartHeight = $($chartHtml).height();
+  var timelineHeight = $($timelineHtml).height();
 
   // timeline box has no height before it's actualy placed.  so give it one.
-  if (FIXED_HEIGHT === 0) {
-    FIXED_HEIGHT = 90;
-  }
+  timelineHeight = (timelineHeight === 0) ? 90 : timelineHeight;
 
-  var marginLeft = chart.plotBox.x;
   timelineBox.css('left', marginLeft + $('#chart_container').offset().left);
   if (chartBottom + 30 < window.innerHeight) {
-    $fixed.style.top = chartBottom + 'px';
+    $timelineHtml.style.top = chartBottom + 'px';
   } else {
-    $fixed.style.top = (window.innerHeight - FIXED_HEIGHT - 10) + 'px';
+    $timelineHtml.style.top = (window.innerHeight - timelineHeight - 10) + 'px';
   }
 
   // the window can be too 'high' after rack collapse that the user see
