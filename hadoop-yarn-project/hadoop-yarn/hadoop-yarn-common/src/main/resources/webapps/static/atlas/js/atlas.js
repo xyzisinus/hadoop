@@ -85,6 +85,7 @@ var pixelsPerSlice = 10;  // width of a slice
 var intervalPerSlice = 0;  // how much time elapsed withing the slice
 
 var appSeriesPrefix = 'Atlas_app_';
+var appSharingSeriesPrefix = 'Atlas_app_sharing_';
 var fakeSeriesId = 'atlas_fake_series';
 
 // "now line" related
@@ -284,6 +285,8 @@ function makeChart() {
     series: series
   });
 
+  recordAppSeriesColors();
+
   addRackButtons();
   processTimeline();
 }
@@ -414,6 +417,8 @@ function updateChart(cause) {
     addRackButtons();
   }
 
+  recordAppSeriesColors();
+
   processTimeline();  // "now" line is handled, too
 }
 
@@ -529,6 +534,30 @@ function processNodes(inNodes) {
 
 ///// data related chart ops /////
 
+function recordAppSeriesColors() {
+  // all app has a seris even if it's all [null, null], to get its color
+  // allocated by highchart. the color is used for the pending partition
+  // series
+  for (var s in chart.series) {
+    var appId = chart.series[s].name;
+    if (chart.series[s].options.id.startsWith(appSeriesPrefix)) {
+      apps[appId].color = chart.series[s].color;
+    }
+  }
+
+  $.each(apps, function(appId, app) {
+    if (app.sharingSeries !== null) {
+      if (chart.get(app.sharingSeries.id) === undefined) {
+        app.sharingSeries.color = app.color;
+        chart.addSeries(app.sharingSeries, true);
+      } else {
+        app.sharingSeries.color = app.color;
+        chart.get(app.sharingSeries).setData(app.sharingSeries, true);
+      }
+    }
+  });
+}
+
 // mainly deal with overlapping usage of apps on a node.
 // for each node, find apps using it and cut usage into intervals each
 // of which is shared by the same set of apps.
@@ -583,7 +612,6 @@ function buildNodesUsage() {
   }
   intervalPerSlice = (timeWindowMax - timeWindowMin) /
     $('#chart_container').width() * pixelsPerSlice;
-  console.log('per slice in node usage', intervalPerSlice);
 }
 
 function makeSeriesForOneRack(rackId) {
@@ -792,8 +820,39 @@ function accumulateUsage(inData, sharerId, start, finish) {
   return data;
 }  // buildRackUsage()
 
+function buildSharingSeries(inSharingSet, appId, n, duration) {
+  var dataSet = inSharingSet;
+  var nAppsSharing = Object.keys(duration.sharerSet).length;
+
+  // present app slices sorted on appId, for consistent color patterns
+  var orderInSet = Object.keys(duration.sharerSet).sort().indexOf(appId);
+  var stride = (nAppsSharing === 1) ? (duration.to - duration.from) :
+        (intervalPerSlice * nAppsSharing);
+  var strideCount = 0;
+
+  while (true) {
+    var currentPos = duration.from + stride * strideCount +
+      intervalPerSlice * orderInSet;
+    var currentPosEnd = (nAppsSharing === 1) ? duration.to :
+      Math.min(currentPos + intervalPerSlice, duration.to);
+
+    if (currentPos >= duration.to) {
+      break;
+    }
+
+    var slice = {x: nodeCollection[n].categoryIdx,
+                 low: currentPos,
+                 high: currentPosEnd};
+    dataSet.push(slice);
+    strideCount++;
+  }
+
+  return dataSet;
+}
+
 function makeSeriesForOneApp(appId) {
   var dataSet = [];
+  var sharingSet = [];
 
   // go through all nodes in use for the app
   $.each(apps[appId].nodesInUse, function(n, duration) {
@@ -807,10 +866,14 @@ function makeSeriesForOneApp(appId) {
         return true;
       }
 
+      var nAppsSharing = Object.keys(duration.sharerSet).length;
+      if (nAppsSharing > 1) {  // shared interval is presented as polygons
+        sharingSet = buildSharingSeries(sharingSet, appId, n, duration);
+        return true;
+      }
+
       // present app slices sorted on appId, for consistent color patterns
       var orderInSet = Object.keys(duration.sharerSet).sort().indexOf(appId);
-
-      var nAppsSharing = Object.keys(duration.sharerSet).length;
       var stride = (nAppsSharing === 1) ? (duration.to - duration.from) :
         (intervalPerSlice * nAppsSharing);
       var strideCount = 0;
@@ -839,6 +902,16 @@ function makeSeriesForOneApp(appId) {
     return (a.x > b.x) ? 1 : ((b.x > a.x) ? -1 : 0);
   });
 
+  sharingSet.sort(function(a,b) {
+    return (a.x > b.x) ? 1 : ((b.x > a.x) ? -1 : 0);
+  });
+
+  // if an app has no data here, that means every node it uses is shared with
+  // another app.  But we need its color assignment to draw the shared nodes.
+  // so we make an empty data set to get a color for it.
+  if (dataSet.length === 0) {
+    dataSet.push(null);
+  }
   var appSeries = {
     type: 'columnrange',
     id: apps[appId].seriesId,
@@ -846,6 +919,14 @@ function makeSeriesForOneApp(appId) {
     data: dataSet
   };
   apps[appId].haveNewData = false;
+
+  apps[appId].sharingSeries = sharingSet.length === 0 ? null :
+    {
+      type: 'columnrange',
+      id: appSharingSeriesPrefix + appId,
+      name: appId,
+      data: sharingSet
+    };
 
   // no category touched by app. it can happen with rack collapse
   return appSeries;  // data can be emtpy, like []
@@ -1285,6 +1366,8 @@ function positionTimeline() {
   // timeline box has no height before it's actualy placed.  so give it one.
   timelineHeight = 20 + ((timelineHeight === 0) ? 90 : timelineHeight);
 
+  // xxx has a little overlap at the bottom. horizontal alignment on home
+  // chrome is off
   timelineBox.css('left', marginLeft + $('#chart_container').offset().left);
   if (chartBottom + timelineHeight < window.innerHeight) {
     $timelineHtml.style.top = chartBottom + 'px';
