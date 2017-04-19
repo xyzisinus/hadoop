@@ -30,8 +30,8 @@ var capturedData = {"nodes":[{"rack":"/r0","nodeId":"rr329.narwhal.pdl.cmu.edu:5
 {"node":"rr134.narwhal.pdl.cmu.edu:39776","creationTime":1454523295106,"finishTime":0},
 {"node":"rr356.narwhal.pdl.cmu.edu:39321","creationTime":1454523295107,"finishTime":0}]},
 {"appName":"fake_3","applicationId":"application_fake_3","reservationId":"reservation_fake_3","startTime":1454524175240,"finishTime":0,"state":"RUNNING",
-"ranNodes":["rr319.narwhal.pdl.cmu.edu:44088","rr266.narwhal.pdl.cmu.edu:39776"],
-"containers":[{"node":"rr319.narwhal.pdl.cmu.edu:44088","creationTime":1454524176015,"finishTime":0},
+"ranNodes":["rr356.narwhal.pdl.cmu.edu:44088","rr266.narwhal.pdl.cmu.edu:39776"],
+"containers":[{"node":"rr356.narwhal.pdl.cmu.edu:44088","creationTime":1454524176015,"finishTime":0},
 {"node":"rr266.narwhal.pdl.cmu.edu:39776","creationTime":1454524295106,"finishTime":0}]}
 ]};
 
@@ -42,7 +42,7 @@ var partitionPool = null;
 var partitionPoolUsage = null;
 var maxNumPartitions = 3;
 var interval = 0;
-var addMoreNodes = true;  // set to true if adding more nodes
+var addMoreNodes = false;  // set to true if adding more nodes
 var nExtraNodes = 20;  // number of fake nodes to add
 // the initial seed
 Math.seed = 6;
