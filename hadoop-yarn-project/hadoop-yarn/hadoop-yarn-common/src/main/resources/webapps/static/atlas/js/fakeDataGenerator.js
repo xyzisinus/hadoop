@@ -21,12 +21,18 @@
 
 var capturedData = {"nodes":[{"rack":"/r0","nodeId":"rr329.narwhal.pdl.cmu.edu:52702"},{"rack":"/r0","nodeId":"rr369.narwhal.pdl.cmu.edu:54246"},{"rack":"/r1","nodeId":"rr266.narwhal.pdl.cmu.edu:53903"},{"rack":"/r1","nodeId":"rr319.narwhal.pdl.cmu.edu:49253"},{"rack":"/r1","nodeId":"rr134.narwhal.pdl.cmu.edu:39776"},{"rack":"/r0","nodeId":"rr263.narwhal.pdl.cmu.edu:44088"},{"rack":"/r0","nodeId":"rr288.narwhal.pdl.cmu.edu:52770"},{"rack":"/r1","nodeId":"rr356.narwhal.pdl.cmu.edu:39321"}],
 "apps":[
-{"appName":"6_9_120_120_110_110_0_0_362","applicationId":"application_1454444273400_0010","reservationId":"reservation_1454444273400_0011","startTime": 1454523171378, "finishTime":0,"state":"RUNNING","ranNodes":["rr288.narwhal.pdl.cmu.edu:52770"],"containers":[{"node":"rr288.narwhal.pdl.cmu.edu:52770","creationTime":1454523100000 /*71546*/,"finishTime":0}]},
-// {"appName":"6_9_121_121_111_111_0_0_363","applicationId":"application_1454444273400_0011","reservationId":"reservation_1454444273400_0010","startTime":1454523175187,"finishTime":0,"state":"RUNNING","ranNodes":["rr369.narwhal.pdl.cmu.edu:54246"],"containers":[{"node":"rr369.narwhal.pdl.cmu.edu:54246","creationTime":1454523176010,"finishTime":0}]},
-{"appName":"6_9_120_120_110_110_0_0_360","applicationId":"application_1454444273400_0012","reservationId":"reservation_1454444273400_0012","startTime":1454523175240,"finishTime":0,"state":"RUNNING","ranNodes":["rr263.narwhal.pdl.cmu.edu:44088","rr134.narwhal.pdl.cmu.edu:39776","rr356.narwhal.pdl.cmu.edu:39321"],"containers":[{"node":"rr263.narwhal.pdl.cmu.edu:44088","creationTime":1454523176015,"finishTime":0},{"node":"rr134.narwhal.pdl.cmu.edu:39776","creationTime":1454523295106,"finishTime":0},{"node":"rr356.narwhal.pdl.cmu.edu:39321","creationTime":1454523295107,"finishTime":0}]},
-// {"appName":"fake_1","applicationId":"application_fake_1","reservationId":"reservation_fake_1","startTime":1454524371378, "finishTime":0,"state":"RUNNING","ranNodes":["rr329.narwhal.pdl.cmu.edu:52770"],"containers":[{"node":"rr329.narwhal.pdl.cmu.edu:52770","creationTime":1454524371378,"finishTime":0}]},
-// {"appName":"fake_2","applicationId":"application_fake_2","reservationId":"reservation_fake_2","startTime":1454524175187,"finishTime":0,"state":"RUNNING","ranNodes":["rr369.narwhal.pdl.cmu.edu:54246"],"containers":[{"node":"rr369.narwhal.pdl.cmu.edu:54246","creationTime":1454524176010,"finishTime":0}]},
-{"appName":"fake_3","applicationId":"application_fake_3","reservationId":"reservation_fake_3","startTime":1454524175240,"finishTime":0,"state":"RUNNING","ranNodes":["rr319.narwhal.pdl.cmu.edu:44088","rr266.narwhal.pdl.cmu.edu:39776", /*"rr263.narwhal.pdl.cmu.edu:39321"*/],"containers":[{"node":"rr319.narwhal.pdl.cmu.edu:44088","creationTime":1454524176015,"finishTime":0},{"node":"rr266.narwhal.pdl.cmu.edu:39776","creationTime":1454524295106,"finishTime":0}/* ,{"node":"rr263.narwhal.pdl.cmu.edu:39321","creationTime":1454524295107,"finishTime":0}*/]}
+{"appName":"6_9_120_120_110_110_0_0_362","applicationId":"application_1454444273400_0010","reservationId":"reservation_1454444273400_0011","startTime": 1454523171378, "finishTime":0,"state":"RUNNING",
+"ranNodes":["rr288.narwhal.pdl.cmu.edu:52770"],
+"containers":[{"node":"rr288.narwhal.pdl.cmu.edu:52770","creationTime":1454523100000,"finishTime":0}]},
+{"appName":"6_9_120_120_110_110_0_0_360","applicationId":"application_1454444273400_0012","reservationId":"reservation_1454444273400_0012","startTime":1454523175240,"finishTime":0,"state":"RUNNING",
+"ranNodes":["rr263.narwhal.pdl.cmu.edu:44088","rr134.narwhal.pdl.cmu.edu:39776","rr356.narwhal.pdl.cmu.edu:39321"],
+"containers":[{"node":"rr263.narwhal.pdl.cmu.edu:44088","creationTime":1454523176015,"finishTime":0},
+{"node":"rr134.narwhal.pdl.cmu.edu:39776","creationTime":1454523295106,"finishTime":0},
+{"node":"rr356.narwhal.pdl.cmu.edu:39321","creationTime":1454523295107,"finishTime":0}]},
+{"appName":"fake_3","applicationId":"application_fake_3","reservationId":"reservation_fake_3","startTime":1454524175240,"finishTime":0,"state":"RUNNING",
+"ranNodes":["rr319.narwhal.pdl.cmu.edu:44088","rr266.narwhal.pdl.cmu.edu:39776"],
+"containers":[{"node":"rr319.narwhal.pdl.cmu.edu:44088","creationTime":1454524176015,"finishTime":0},
+{"node":"rr266.narwhal.pdl.cmu.edu:39776","creationTime":1454524295106,"finishTime":0}]}
 ]};
 
 var testPartition = true;
@@ -124,6 +130,7 @@ function getFakeData(callServerOnlyOnce) {
     restartOneApp(2);  // restart preempted job
   }
 
+  // console.log(JSON.stringify(apps, null, 2));  // dump the data
   return {nodes: nodes, apps: apps};
 }
 
