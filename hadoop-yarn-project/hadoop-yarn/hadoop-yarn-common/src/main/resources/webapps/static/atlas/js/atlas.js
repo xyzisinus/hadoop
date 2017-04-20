@@ -825,27 +825,35 @@ function buildSharingSeries(inSharingSet, appId, n, duration) {
   var nAppsSharing = Object.keys(duration.sharerSet).length;
 
   // present app slices sorted on appId, for consistent color patterns
-  var orderInSet = Object.keys(duration.sharerSet).sort().indexOf(appId);
+  var orderInSetUpper = Object.keys(duration.sharerSet).sort().indexOf(appId);
+  var orderInSetLower = (orderInSetUpper + 1) % nAppsSharing;
   var stride = (nAppsSharing === 1) ? (duration.to - duration.from) :
         (intervalPerSlice * nAppsSharing);
-  var strideCount = 0;
 
-  while (true) {
-    var currentPos = duration.from + stride * strideCount +
-      intervalPerSlice * orderInSet;
-    var currentPosEnd = (nAppsSharing === 1) ? duration.to :
-      Math.min(currentPos + intervalPerSlice, duration.to);
+  $.each([orderInSetUpper, orderInSetLower], function(i, orderInSet) {
+    var strideCount = 0;
 
-    if (currentPos >= duration.to) {
-      break;
+    while (true) {
+      var currentPos = duration.from + stride * strideCount +
+        intervalPerSlice * orderInSet;
+      var currentPosEnd = (nAppsSharing === 1) ? duration.to :
+        Math.min(currentPos + intervalPerSlice, duration.to);
+
+      if (currentPos >= duration.to) {
+        break;
+      }
+
+      var top = nodeCollection[n].categoryIdx - 0.5 + (i / 2);
+      var bottom = nodeCollection[n].categoryIdx + (i / 2);
+      dataSet.push([bottom, currentPos]);
+      dataSet.push([top, currentPos]);
+      dataSet.push([top, currentPosEnd]);
+      dataSet.push([bottom, currentPosEnd]);
+      dataSet.push([null, null]);
+
+      strideCount++;
     }
-
-    var slice = {x: nodeCollection[n].categoryIdx,
-                 low: currentPos,
-                 high: currentPosEnd};
-    dataSet.push(slice);
-    strideCount++;
-  }
+  });
 
   return dataSet;
 }
@@ -902,10 +910,6 @@ function makeSeriesForOneApp(appId) {
     return (a.x > b.x) ? 1 : ((b.x > a.x) ? -1 : 0);
   });
 
-  sharingSet.sort(function(a,b) {
-    return (a.x > b.x) ? 1 : ((b.x > a.x) ? -1 : 0);
-  });
-
   // if an app has no data here, that means every node it uses is shared with
   // another app.  But we need its color assignment to draw the shared nodes.
   // so we make an empty data set to get a color for it.
@@ -922,7 +926,8 @@ function makeSeriesForOneApp(appId) {
 
   apps[appId].sharingSeries = sharingSet.length === 0 ? null :
     {
-      type: 'columnrange',
+      type: 'polygon',
+      showInLegend: false,
       id: appSharingSeriesPrefix + appId,
       name: appId,
       data: sharingSet
