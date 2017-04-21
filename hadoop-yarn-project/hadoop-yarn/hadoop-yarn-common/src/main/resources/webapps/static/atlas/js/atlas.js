@@ -22,12 +22,26 @@ var chartHeight = 0;
 var windowChartWidthDiff = 0;
 var chartMinMax = [null, null];  // let chart decide, or set by timeline
 
+var appSeriesPrefix = 'Atlas_app_';
+var appSharingSeriesPrefix = 'Atlas_app_sharing_';
+
 // apps are indexed by application id.
 // the structure maintains the state of the apps across refresh.
 // app's state: new, updated, unchanged (since last refresh)
 // an app has an index to the series array for the chart
 var apps = {};
 var series = [];
+function appInfo(appId) {
+  this.nodesInUse = {};
+  this.color = null;
+  this.id = appId;
+}
+appInfo.prototype.seriesId = function() {
+  return appSeriesPrefix + this.id;
+}
+appInfo.prototype.sharingSeriesId = function() {
+  return appSharingSeriesPrefix + this.id;
+}
 
 var nodesProcessed = false;
 var nodeCollection = {};  // node id -> app usage, state, categoriesIdx, etc
@@ -81,11 +95,9 @@ var timelineHeight = 130;
 // they show up on the bar like zebra stripes. each app has a small slice
 // of its color and the pattern repeats to cover the interval.  The
 // following controls the width of each slice.
-var pixelsPerSlice = 10;  // width of a slice
+var pixelsPerSlice = 10;  // width of a slice, exactly 1/2 of band height
 var intervalPerSlice = 0;  // how much time elapsed withing the slice
 
-var appSeriesPrefix = 'Atlas_app_';
-var appSharingSeriesPrefix = 'Atlas_app_sharing_';
 var fakeSeriesId = 'atlas_fake_series';
 
 // "now line" related
@@ -378,7 +390,7 @@ function updateChart(cause) {
   buildNodesUsage();
   for (var appId in apps) {
     var app = apps[appId];
-    var seriesId = apps[appId].seriesId;
+    var seriesId = apps[appId].seriesId();
     if (app.haveNewData || layoutChanged || cause === 'timescaleChanged') {
       needRedraw = true;
       var appSeries = makeSeriesForOneApp(appId);
@@ -438,18 +450,15 @@ function updateAppState(inApp, nodesInUse, finished) {
   }
 
   if (!(id in apps)) {  // make new app entry
-    apps[id] = {};
-    apps[id].nodesInUse = {};
-    apps[id].seriesId = appSeriesPrefix + id;
-    apps[id].color = null;
+    apps[id] = new appInfo(id);
   }
   var app = apps[id];
 
   app.finished = finished;
   app.haveNewData = true;
   app.startTime = inApp.startTime;
-  var finishTime = Number(inApp.finishTime);
-  if (finishTime === 0) {
+  app.finishTime = Number(inApp.finishTime);
+  if (app.finishTime === 0) {
     app.finishTime = timeInCurrentLoop;
     currentTimeUsed = true;
   }
@@ -540,19 +549,19 @@ function recordAppSeriesColors() {
   // series
   for (var s in chart.series) {
     var appId = chart.series[s].name;
-    if (chart.series[s].options.id.startsWith(appSeriesPrefix)) {
+    if (chart.series[s].options.id.isAppSeries()) {
       apps[appId].color = chart.series[s].color;
     }
   }
 
   $.each(apps, function(appId, app) {
     if (app.sharingSeries !== null) {
-      if (chart.get(app.sharingSeries.id) === undefined) {
+      if (chart.get(app.sharingSeriesId()) === undefined) {
         app.sharingSeries.color = app.color;
         chart.addSeries(app.sharingSeries, true);
       } else {
         app.sharingSeries.color = app.color;
-        chart.get(app.sharingSeries).setData(app.sharingSeries, true);
+        chart.get(app.sharingSeriesId()).setData(app.sharingSeries, true);
       }
     }
   });
@@ -851,6 +860,14 @@ function buildSharingSeries(inSharingSet, appId, n, duration) {
       dataSet.push([bottom, currentPosEnd]);
       dataSet.push([null, null]);
 
+      /*
+      console.log(bottom, currentPos);
+      console.log(top, currentPos);
+      console.log(top, currentPosEnd);
+      console.log(bottom, currentPosEnd);
+      console.log(null, null, currentPosEnd - currentPos);
+      */
+
       strideCount++;
     }
   });
@@ -918,7 +935,7 @@ function makeSeriesForOneApp(appId) {
   }
   var appSeries = {
     type: 'columnrange',
-    id: apps[appId].seriesId,
+    id: apps[appId].seriesId(),
     name: appId,
     data: dataSet
   };
@@ -928,7 +945,7 @@ function makeSeriesForOneApp(appId) {
     {
       type: 'polygon',
       showInLegend: false,
-      id: appSharingSeriesPrefix + appId,
+      id: apps[appId].sharingSeriesId(),
       name: appId,
       data: sharingSet
     };
@@ -1446,4 +1463,14 @@ function timestampToDate(d) {
 
 function dictionariesEqual(d1, d2) {
   return (JSON.stringify(d1) === JSON.stringify(d2));
+}
+
+String.prototype.isAppSeries = function() {
+  return this.startsWith(appSeriesPrefix);
+}
+String.prototype.isAppSharingSeries = function() {
+  return this.startsWith(appSharingSeriesPrefix);
+}
+Highcharts.error = function (code) {
+  console.log('error', code);
 }
