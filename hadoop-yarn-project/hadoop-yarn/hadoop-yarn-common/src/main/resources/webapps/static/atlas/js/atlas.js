@@ -298,6 +298,10 @@ function makeChart() {
   });
 
   recordAppSeriesColors();
+  var needRedraw = addSharingApps();  // add polygons for the node-sharing apps
+  if (needRedraw) {
+    chart.redraw();
+  }
 
   addRackButtons();
   processTimeline();
@@ -391,7 +395,7 @@ function updateChart(cause) {
   for (var appId in apps) {
     var app = apps[appId];
     var seriesId = apps[appId].seriesId();
-    if (app.haveNewData || layoutChanged || cause === 'timescaleChanged') {
+    if (app.haveNewData || layoutChanged) {
       needRedraw = true;
       var appSeries = makeSeriesForOneApp(appId);
       if (appSeries.data.length !== 0) {
@@ -405,9 +409,12 @@ function updateChart(cause) {
     }
   }
 
+  recordAppSeriesColors();
+  needRedraw |= addSharingApps(cause);
+
   // leave fake series there but update it to fit the new categrories
   if (chart.get(fakeSeriesId) !== undefined && layoutChanged){
-    chart.get(fakeSeriesId).setData(makeFakeSeries(), false);
+    chart.get(fakeSeriesId).setData(makeFakeSeries().data, false);
   }
 
   // chart time window: if not set by timeline, highchart decides by default.
@@ -428,8 +435,6 @@ function updateChart(cause) {
   if (layoutChanged) {
     addRackButtons();
   }
-
-  recordAppSeriesColors();
 
   processTimeline();  // "now" line is handled, too
 }
@@ -553,18 +558,24 @@ function recordAppSeriesColors() {
       apps[appId].color = chart.series[s].color;
     }
   }
+}
+
+function addSharingApps(cause) {
+  //   if (cause === 'categoriesChanged') {
+  //   if (cause === 'timescaleChanged') {
 
   $.each(apps, function(appId, app) {
     if (app.sharingSeries !== null) {
       if (chart.get(app.sharingSeriesId()) === undefined) {
         app.sharingSeries.color = app.color;
-        chart.addSeries(app.sharingSeries, true);
+        chart.addSeries(app.sharingSeries, false);
       } else {
-        app.sharingSeries.color = app.color;
-        chart.get(app.sharingSeriesId()).setData(app.sharingSeries, true);
+        chart.get(app.sharingSeriesId()).setData(app.sharingSeries.data, false);
       }
     }
   });
+
+  return true;
 }
 
 // mainly deal with overlapping usage of apps on a node.
@@ -668,6 +679,7 @@ function makeSeriesForOneRack(rackId) {
     name: rack.seriesId(),
     shadow: true,
     color: rack.seriesColor(),
+    enableMouseTracking: false,
     data: dataSet
   };
 
@@ -933,6 +945,10 @@ function makeSeriesForOneApp(appId) {
   if (dataSet.length === 0) {
     dataSet.push(null);
   }
+  if (sharingSet.length == 0) {
+    sharingSet.push([null, null]);
+  }
+
   var appSeries = {
     type: 'columnrange',
     id: apps[appId].seriesId(),
