@@ -289,6 +289,7 @@ function makeChart() {
         stacking: 'normal'
       },
       series: {
+        animation: false,
         pointPadding: 0,
         groupPadding: 0
       }
@@ -298,7 +299,7 @@ function makeChart() {
   });
 
   recordAppSeriesColors();
-  var needRedraw = addSharingApps();  // add polygons for the node-sharing apps
+  var needRedraw = addSharingApps();  // add polygons for node-sharing apps
   if (needRedraw) {
     chart.redraw();
   }
@@ -388,14 +389,14 @@ function updateChart(cause) {
     } else {
       chart.get(rack.seriesId()).setData(rackSeries.data, false);
     }
-  }
+  }  // if (cause === 'categoriesChanged')
 
   // renew apps for uncollapsed nodes
   buildNodesUsage();
   for (var appId in apps) {
     var app = apps[appId];
     var seriesId = apps[appId].seriesId();
-    if (app.haveNewData || layoutChanged) {
+    if (app.haveNewData || layoutChanged || cause === 'timescaleChanged') {
       needRedraw = true;
       var appSeries = makeSeriesForOneApp(appId);
       if (appSeries.data.length !== 0) {
@@ -1242,7 +1243,12 @@ function processTimeline() {
 function considerUpdate(timescaleMin, timescaleMax) {
   var newInterval = (timescaleMax - timescaleMin) /
     $('#chart_container').width() * pixelsPerSlice;
-  if (Math.abs(newInterval - intervalPerSlice) / intervalPerSlice > 0.1) {
+
+  // When to update chart with timescale changes:
+  // 1. there are node-sharing apps.  2. the change of timescale is larger
+  // than x% (at that rate the checkerboard pattern will deteriorate).
+  // updating too frequently creates lagging that the user can feel.
+  if (Math.abs(newInterval - intervalPerSlice) / intervalPerSlice > 0.15) {
     intervalPerSlice = newInterval;
     updateChart('timescaleChanged');
   }
@@ -1250,28 +1256,28 @@ function considerUpdate(timescaleMin, timescaleMax) {
 
 function onSelect(info) {
   if (!info.byUser) return;
-
-  // if simplying using the start/end points given by timeline, the
-  // re-scaled chart may be off-center or even out of the viewing window.
-  // here we distinguish the scale change (vs sliding change) and try to
-  // scale both ends of the chart evenly.
-
   var timeWindowMin =  chart.yAxis[0].getExtremes().min;
   var timeWindowMax =  chart.yAxis[0].getExtremes().max;
   var oldInterval = timeWindowMax - timeWindowMin;
   var newInterval = info.end - info.start;
   var scaleChange = (oldInterval - newInterval) / oldInterval;
 
-  if (Math.abs(scaleChange) > 0.1) {  // scale change, not sliding change
+  // if simply using the start/end points given by timeline, the
+  // re-scaled chart may be off-center or even out of the viewing window.
+  // here we distinguish the scale change (vs sliding change) and try to
+  // scale both ends of the chart evenly.  a crude way is to see if
+  // the timeline scale has changed enough.
+
+  if (Math.abs(scaleChange) > 0.1) {
     timeWindowMin += (oldInterval - newInterval) / 2;
     timeWindowMax -= (oldInterval - newInterval) / 2;
+    chart.yAxis[0].setExtremes(timeWindowMin, timeWindowMax);
+    considerUpdate(timeWindowMin, timeWindowMax);
   } else {
     timeWindowMin = info.start;
     timeWindowMax = info.end;
+    chart.yAxis[0].setExtremes(timeWindowMin, timeWindowMax);
   }
-
-  chart.yAxis[0].setExtremes(timeWindowMin, timeWindowMax);
-  considerUpdate(timeWindowMin, timeWindowMax);
 }
 
 function onDoubleClick(info) {
@@ -1311,23 +1317,6 @@ function makeTimeline() {
     var parentOffset = wrapper.offset();
     var relX = e.pageX - parentOffset.left + wrapper.scrollLeft();
     var relY = e.pageY - parentOffset.top + wrapper.scrollTop();
-
-    var reminderBox = $('<div>').attr('id', 'reminder');
-    var reminderText = $('<p>Double click timeline for auto-scaling.</p>');
-    reminderText.appendTo(reminderBox);
-    reminderBox.appendTo($('#general_container'));
-    reminderBox.css({
-      position: 'absolute',
-      'border-style': 'solid',
-      'border-color': 'grey',
-      'border-width': '1px',
-      'background-color': '#F9E79F',
-      left: relX,
-      top: relY
-    });
-    setTimeout(function() {
-      reminderBox.remove();
-    }, 5000);
   });
 
   var min = chart.yAxis[0].getExtremes().min;
@@ -1369,7 +1358,8 @@ function makeTimeline() {
     id: 'timeline_window_hour',
     name: 'timeline_window',
     value : 'hour'
-  }).appendTo(timelineBox).after('hour');
+  }).appendTo(timelineBox).after('hour &ensp;&ensp;&ensp;&ensp;<u>Click timeline to enlarge/shrink/slide.  Double click for auto-scaling.</u>');
+
   $('input:radio[name="timeline_window"]').change(function() {
     var value = $(this).val();
     console.log('radio button', value);
