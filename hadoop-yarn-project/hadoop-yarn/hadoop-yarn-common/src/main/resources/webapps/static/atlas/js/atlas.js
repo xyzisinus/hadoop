@@ -21,6 +21,7 @@ var chartProps = {}; // plotBands/Lines, groupedCategories, nCategories, etc
 var chartHeight = 0;
 var windowChartWidthDiff = 0;
 var chartMinMax = [null, null];  // let chart decide, or set by timeline
+var appSelected = null;
 
 var appSeriesPrefix = 'Atlas_app_';
 var appSharingSeriesPrefix = 'Atlas_app_sharing_';
@@ -54,7 +55,7 @@ function nodeInfo(fullId) {
 }
 
 var rackCollection = {};  // rack id -> nodes, expanding state, etc
-var racks = [];  // sorted short rack id
+var appRackCollection = {};  // racks used by a single app
 function rackInfo(originalId) {
   this.originalId = originalId;
   this.id = originalId;
@@ -84,6 +85,10 @@ rackInfo.prototype.changeExpandState = function(expand) {
 rackInfo.prototype.flipExpandState = function() {
   this.changeExpandState(!this.expanded);
 };
+
+function getRackCollection() {
+  return (appSelected !== null) ? appRackCollection : rackCollection;
+}
 
 // vertical spacing
 var bandHeight = 20;
@@ -289,6 +294,13 @@ function makeChart() {
         stacking: 'normal'
       },
       series: {
+        cursor: 'pointer',
+        events: {
+          dblclick: function(event) {
+            appSelected = (appSelected === this.name) ? null : this.name;
+            updateChart('singleAppFlip');
+          }
+        },
         animation: false,
         pointPadding: 0,
         groupPadding: 0
@@ -315,8 +327,8 @@ function updateChart(cause) {
   var max = chart.yAxis[0].getExtremes().max;
 
   var rack, rackId;
-  if (cause === 'categoriesChanged') {
-    // this update is caused by rack collapse/expand
+  if (cause === 'categoriesChanged' || cause === 'singleAppFlip') {
+    // this update is caused by rack collapse/expand or single app flip
     var bandIds = [];
     var lineIds = [];
     var b, l;
@@ -406,6 +418,11 @@ function updateChart(cause) {
         chart.addSeries(appSeries, false);
       } else {
         chart.get(seriesId).setData(appSeries.data, false);
+      }
+      if (appSeries.visible) {
+        chart.get(seriesId).show();
+      } else {
+        chart.get(seriesId).hide();
       }
     }
   }
@@ -517,6 +534,28 @@ function processApps(inApps) {
   });
 }
 
+function   makeAppRackCollection() {
+  if (appSelected == null) {
+    appRackCollection = null;
+    return;
+  }
+  appRackCollection = {};
+
+  for (node in apps[appSelected].nodesInUse) {
+    var rack = new rackInfo(nodeCollection[node].rack);
+    if (rack.id in appRackCollection) {
+      appRackCollection[rack.id].nodes.push(node);
+    } else {
+      rack.nodes = [node];
+      appRackCollection[rack.id] = rack;
+    }
+  }
+
+  $.each(appRackCollection, function(rackId, rack) {
+    rack.nodes.sort();
+  });
+}
+
 // Nodes from the server have rack property.  So rackCollection structure
 // is also made here.
 function processNodes(inNodes) {
@@ -536,13 +575,13 @@ function processNodes(inNodes) {
       rack.nodes = [node.id];
       rackCollection[rack.id] = rack;
     }
+    node.rack = rack.id;
   });
 
   // racks and the nodes on each rack are sorted alphabetically
-  racks = Object.keys(rackCollection).sort();
-  for (var r in racks) {
-    rackCollection[racks[r]].nodes.sort();
-  }
+  $.each(rackCollection, function(rackId, rack) {
+    rack.nodes.sort();
+  });
 
   nodesProcessed = true;
 }
@@ -567,11 +606,17 @@ function addSharingApps(cause) {
 
   $.each(apps, function(appId, app) {
     if (app.sharingSeries !== null) {
-      if (chart.get(app.sharingSeriesId()) === undefined) {
+      if (chart.get(app.sharingSeriesId()) === undefined &&
+          app.sharingSeries.visible) {
         app.sharingSeries.color = app.color;
         chart.addSeries(app.sharingSeries, false);
       } else {
         chart.get(app.sharingSeriesId()).setData(app.sharingSeries.data, false);
+      }
+      if (app.sharingSeries.visible) {
+        chart.get(app.sharingSeriesId()).show();
+      } else {
+        chart.get(app.sharingSeriesId()).hide();
       }
     }
   });
@@ -636,6 +681,7 @@ function buildNodesUsage() {
 }
 
 function makeSeriesForOneRack(rackId) {
+  var rackCollection = getRackCollection();
   var rack = rackCollection[rackId];
   var data = [];
 
@@ -950,10 +996,13 @@ function makeSeriesForOneApp(appId) {
     sharingSet.push([null, null]);
   }
 
+  var visible = (appSelected !== null && appSelected !== appId) ? false : true;
+
   var appSeries = {
     type: 'columnrange',
     id: apps[appId].seriesId(),
     name: appId,
+    visible: visible,
     data: dataSet
   };
   apps[appId].haveNewData = false;
@@ -964,6 +1013,7 @@ function makeSeriesForOneApp(appId) {
       showInLegend: false,
       id: apps[appId].sharingSeriesId(),
       name: appId,
+      visible: visible,
       data: sharingSet
     };
 
@@ -1010,8 +1060,14 @@ function addCollapseAllButton() {
 }
 
 function addRackButtons() {
+  // don't add collapse button when showing one app
+  if (appSelected !== null) {
+    return;
+  }
+
   var nodeLabelX = 0;  // x for expand button, align with node label
   var x, y;
+  var racks = Object.keys(rackCollection);
 
   // xxx Since there is no api to find the labels, I use a dirty way.
   // All labels are children of an element of xaxis-labels class.
@@ -1119,7 +1175,8 @@ function addPlotBandAndLine(plotBands, plotLines, isRackBoundary, isRack) {
 
   newBand.to = newBand.from + spacing;
   newBand.id = 'band_' + plotBands.length.toString();  // needed for removal
-  newBand.color = isRack? '#dde' : '#ddd';  // rack is purple and node grey
+  newBand.color = (appSelected !== null) ? '#f2e6d9' :
+    (isRack? '#dde' : '#ddd');  // purple: rack, gray: node, beige: single app
   plotBands.push(newBand);
 }
 
@@ -1131,8 +1188,11 @@ function makeCategories() {
   var groupedNodes = [];
   var allCollapsed = true;
 
-  for (var r = 0; r < racks.length; r++) {
-    var rackId = racks[r];
+  makeAppRackCollection();
+  var rackCollection = getRackCollection();
+
+  var racks = Object.keys(rackCollection).sort();
+  $.each(racks, function(r, rackId) {
     var rack = rackCollection[rackId];
     var group = {};
     groupedNodes.push(group);
@@ -1177,7 +1237,7 @@ function makeCategories() {
       addPlotBandAndLine(plotBands, plotLines, true, true);
       // console.log('category', categoryIdx, rackId);
     }
-  }
+  });
 
   chartHeight = categoryIdx * bandHeight + chartHeightPadding;
 
@@ -1324,7 +1384,6 @@ function makeTimeline() {
 
   // Configuration for the Timeline
   var options = {start: min, end: max,
-                 clickToUse: true,
                  showCurrentTime: false,
                  margin: {axis: 0}};
 
@@ -1334,13 +1393,14 @@ function makeTimeline() {
   timeline.on('doubleClick', onDoubleClick);
 
   // buttons to select view window
+  $('<div />').appendTo(timelineBox).after('Select range:');
   var view_window = $('<input />',{
     type: 'radio',
     id: 'timeline_window_all',
     name: 'timeline_window',
     value : 'all'
   });
-  view_window.prop('checked', true).appendTo(timelineBox).after('all');
+  view_window.prop('checked', true).appendTo(timelineBox).after('auto');
   $('<input />',{
     type: 'radio',
     id: 'timeline_window_week',
@@ -1358,7 +1418,7 @@ function makeTimeline() {
     id: 'timeline_window_hour',
     name: 'timeline_window',
     value : 'hour'
-  }).appendTo(timelineBox).after('hour &ensp;&ensp;&ensp;&ensp;<u>Click timeline to enlarge/shrink/slide.  Double click for auto-scaling.</u>');
+  }).appendTo(timelineBox).after('hour &nbsp;&nbsp;&nbsp;&nbsp;<i>Scroll timeline to zoom and drag to pan.  Double click an app for exclusive view.</i>');
 
   $('input:radio[name="timeline_window"]').change(function() {
     var value = $(this).val();
