@@ -29,28 +29,26 @@ public class AtlasPage extends RmView {
   static class AtlasBlock extends HtmlBlock {
     @Override
     public void render(Block html) {
-      html.script().$type("text/javascript").$src("/static/atlas/thirdParty/d3.v3.js")._();
-      html.script().$type("text/javascript").$src("/static/atlas/thirdParty/highcharts.src.js")._();
-      html.script().$type("text/javascript").$src("/static/atlas/thirdParty/highcharts-more.src.js")._();
-      html.script().$type("text/javascript").$src("/static/atlas/thirdParty/exporting.src.js")._();
-      html.script().$type("text/javascript").$src("/static/atlas/thirdParty/grouped-categories.js")._();
-      html.link().$rel("stylesheet").$href("/static/atlas/thirdParty/vis.min.css")._();
-      html.script().$type("text/javascript").$src("/static/atlas/thirdParty/vis.min.js")._();
-      html.link().$rel("stylesheet").$href("/static/atlas/thirdParty/jquery.switchButton.css")._();
-      html.script().$type("text/javascript").$src("/static/atlas/thirdParty/jquery.switchButton.js")._();
+      // xxx For testing/debugging, use the source directly from my desktop.  Will be integrated into yarn jar file
+      html.script().$type("text/javascript").$src("http://everest.pdl.cmu.edu/hadoop/third_party/d3.v3.js")._();
+      html.script().$type("text/javascript").$src("http://everest.pdl.cmu.edu/hadoop/third_party/highcharts.src.js")._();
+      html.script().$type("text/javascript").$src("http://everest.pdl.cmu.edu/hadoop/third_party/highcharts-more.src.js")._();
+      html.script().$type("text/javascript").$src("http://everest.pdl.cmu.edu/hadoop/third_party/exporting.src.js")._();
+      html.script().$type("text/javascript").$src("http://everest.pdl.cmu.edu/hadoop/third_party/customEvents.js")._();
+      html.script().$type("text/javascript").$src("http://everest.pdl.cmu.edu/hadoop/third_party/grouped-categories.js")._();
+      html.link().$rel("stylesheet").$href("http://everest.pdl.cmu.edu/hadoop/third_party/vis.min.css")._();
+      html.script().$type("text/javascript").$src("http://everest.pdl.cmu.edu/hadoop/third_party/vis.min.js")._();
+      html.link().$rel("stylesheet").$href("http://everest.pdl.cmu.edu/hadoop/third_party/jquery.switchButton.css")._();
+      html.script().$type("text/javascript").$src("http://everest.pdl.cmu.edu/hadoop/third_party/jquery.switchButton.js")._();
 
       // home made script(s)
-      html.script().$type("text/javascript").$src("/static/atlas/js/atlas.js")._();      
+      html.script().$type("text/javascript").$src("http://everest.pdl.cmu.edu/hadoop/home_made/atlas.js")._();
 
       // general_container has everything, including buttons, chart and timeline
       DIV generalContainer = html.div().$id("general_container")._("");
 
-      // group nodes by rack/partition button
-      DIV groupBy = html.div().$id("groupByDiv").$style("float: left;")._("Group nodes by:");
-      html.div().$id("groupBy").$class("switch-wrapper")._();
-      groupBy._();
       // collapse none/all button
-      DIV collapseAll = html.div().$id("collapseAllDiv").$style("float: right;")._("Collapse racks/partitions:");
+      DIV collapseAll = html.div().$id("collapseAllDiv").$style("float: right; margin-right: 20px")._("Collapse racks:");
       html.div().$id("collapseAll").$class("switch-wrapper")._();
       collapseAll._();
 
