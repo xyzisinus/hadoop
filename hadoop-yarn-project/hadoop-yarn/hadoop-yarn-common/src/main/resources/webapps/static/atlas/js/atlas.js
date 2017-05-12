@@ -284,7 +284,7 @@ function makeChart() {
     tooltip: {
       style: {fontSize: '13pt', lineHeight: '20%'},
       formatter: function() {
-        return makeTooltip(this.series);
+        return makeTooltip(this);
       }
     },
 
@@ -951,33 +951,19 @@ function makeSeriesForOneApp(appId) {
       }
 
       var nAppsSharing = Object.keys(duration.sharerSet).length;
-      if (nAppsSharing > 1) {  // shared interval is presented as polygons
+      // shared interval is checkboard unless when showing a single app
+      if (nAppsSharing > 1 && appId !== appSelected) {
         sharingSet = buildSharingSeries(sharingSet, appId, n, duration);
         return true;
       }
 
-      // present app slices sorted on appId, for consistent color patterns
-      var orderInSet = Object.keys(duration.sharerSet).sort().indexOf(appId);
-      var stride = (nAppsSharing === 1) ? (duration.to - duration.from) :
-        (intervalPerSlice * nAppsSharing);
-      var strideCount = 0;
-
-      while (true) {
-        var currentPos = duration.from + stride * strideCount +
-          intervalPerSlice * orderInSet;
-        var currentPosEnd = (nAppsSharing === 1) ? duration.to :
-          Math.min(currentPos + intervalPerSlice, duration.to);
-
-        if (currentPos >= duration.to) {
-          break;
-        }
-
-        var slice = {x: nodeCollection[n].categoryIdx,
-                     low: currentPos,
-                     high: currentPosEnd};
-        dataSet.push(slice);
-        strideCount++;
-      }
+      var sharerMsg = (nAppsSharing === 1) ? null :
+        ('Sharing this node with ' + (nAppsSharing - 1) + ' apps');
+      var slice = {x: nodeCollection[n].categoryIdx,
+                   name: sharerMsg,
+                   low: duration.from,
+                   high: duration.to};
+      dataSet.push(slice);
     });
   });
 
@@ -1170,6 +1156,7 @@ function addPlotBandAndLine(plotBands, plotLines, isRackBoundary, isRack) {
   newLine.width = isRackBoundary? 2 : 1;
   newLine.color = 'black';
   newLine.id = 'line_' + plotLines.length.toString();  // needed for removal
+
   newLine.zIndex = 5;
   plotLines.push(newLine);
 
@@ -1249,7 +1236,8 @@ function makeCategories() {
           nCategories: categoryIdx};
 }
 
-function makeTooltip(series) {
+function makeTooltip(tooltipObj) {
+  var series = tooltipObj.series;
   var tooltip = 'Application: ' + series.name + '<br>';
   var app = apps[series.name];
   var nContainers = app.nContainers;
@@ -1274,6 +1262,10 @@ function makeTooltip(series) {
   if ('deadline' in app) {
     tooltip += 'Deadline: ' + timestampToDate(app.deadline) + '<br>';
   }
+  if (tooltipObj.point.name !== undefined && tooltipObj.point.name !== null) {
+    tooltip += tooltipObj.point.name + '<br>';
+  }
+
   return tooltip;
 }
 
