@@ -22,6 +22,7 @@ var chartHeight = 0;
 var windowChartWidthDiff = 0;
 var chartMinMax = [null, null];  // let chart decide, or set by timeline
 var appSelected = null;
+var nodeSharing = false;
 
 var appSeriesPrefix = 'Atlas_app_';
 var appSharingSeriesPrefix = 'Atlas_app_sharing_';
@@ -101,7 +102,18 @@ var timelineHeight = 130;
 // of its color and the pattern repeats to cover the interval.  The
 // following controls the width of each slice.
 var pixelsPerSlice = 10;  // width of a slice, exactly 1/2 of band height
-var intervalPerSlice = 0;  // how much time elapsed withing the slice
+var intervalPerSlice = 0;  // time interval covered by above constant
+
+// if single app view is selected and the app shares some nodes with other
+// apps, a duration sequence for the app/node combination
+// [from_0, to_0, no_sharing], [to_0, to_1, sharing]
+// will be presented as two segments in the column range series.  Although zero
+// borderwidth is selected for column range, a thin border still shows between
+// two segments, especially for a dark-colored series.  It's found that if
+// the two segments overlap by several pixels, the unwanted border will not
+// show.  The following controls the amount of overlapping.
+var pixelsForOverlapping = 5;  // pixels to overlap
+var intervalForOverlapping = 0;  // time interval covered by above constant
 
 var fakeSeriesId = 'atlas_fake_series';
 
@@ -672,12 +684,7 @@ function buildNodesUsage() {
 
   // use chart's two ends to compute time interval per slice.
   // if chart is not created yet, then use current app's durations to estimate
-  if (chart !== null) {
-    timeWindowMin =  chart.yAxis[0].getExtremes().min;
-    timeWindowMax =  chart.yAxis[0].getExtremes().max;
-  }
-  intervalPerSlice = (timeWindowMax - timeWindowMin) /
-    $('#chart_container').width() * pixelsPerSlice;
+  computeIntervalsByPixel(timeWindowMin, timeWindowMax);
 }
 
 function makeSeriesForOneRack(rackId) {
@@ -891,6 +898,7 @@ function accumulateUsage(inData, sharerId, start, finish) {
 function buildSharingSeries(inSharingSet, appId, n, duration) {
   var dataSet = inSharingSet;
   var nAppsSharing = Object.keys(duration.sharerSet).length;
+  nodeSharing = nodeSharing || (nAppsSharing > 0);
 
   // present app slices sorted on appId, for consistent color patterns
   var orderInSetUpper = Object.keys(duration.sharerSet).sort().indexOf(appId);
@@ -957,11 +965,13 @@ function makeSeriesForOneApp(appId) {
         return true;
       }
 
+      // see explanation for variable intervalForOverlapping
+      var overlapping = (appSelected) ? intervalForOverlapping : 0;
       var sharerMsg = (nAppsSharing === 1) ? null :
         ('Sharing this node with ' + (nAppsSharing - 1) + ' apps');
       var slice = {x: nodeCollection[n].categoryIdx,
                    name: sharerMsg,
-                   low: duration.from,
+                   low: duration.from - overlapping,
                    high: duration.to};
       dataSet.push(slice);
     });
@@ -1292,16 +1302,14 @@ function processTimeline() {
 
 // when timeline changes, the multi-app nodes may need to redraw
 // when the timescale changes too much (more than 10%)
-function considerUpdate(timescaleMin, timescaleMax) {
-  var newInterval = (timescaleMax - timescaleMin) /
-    $('#chart_container').width() * pixelsPerSlice;
-
+function considerUpdatingChart(timescaleMin, timescaleMax) {
   // When to update chart with timescale changes:
   // 1. there are node-sharing apps.  2. the change of timescale is larger
   // than x% (at that rate the checkerboard pattern will deteriorate).
   // updating too frequently creates lagging that the user can feel.
-  if (Math.abs(newInterval - intervalPerSlice) / intervalPerSlice > 0.15) {
-    intervalPerSlice = newInterval;
+  var old = intervalPerSlice;
+  computeIntervalsByPixel(timescaleMin, timescaleMax);
+  if (nodeSharing && Math.abs(intervalPerSlice - old) / old > 0.15) {
     updateChart('timescaleChanged');
   }
 }
@@ -1314,7 +1322,7 @@ function onSelect(info) {
   var newInterval = info.end - info.start;
   var scaleChange = (oldInterval - newInterval) / oldInterval;
 
-  // if simply using the start/end points given by timeline, the
+  // if simply use the start/end points given by timeline, the
   // re-scaled chart may be off-center or even out of the viewing window.
   // here we distinguish the scale change (vs sliding change) and try to
   // scale both ends of the chart evenly.  a crude way is to see if
@@ -1324,7 +1332,7 @@ function onSelect(info) {
     timeWindowMin += (oldInterval - newInterval) / 2;
     timeWindowMax -= (oldInterval - newInterval) / 2;
     chart.yAxis[0].setExtremes(timeWindowMin, timeWindowMax);
-    considerUpdate(timeWindowMin, timeWindowMax);
+    considerUpdatingChart(timeWindowMin, timeWindowMax);
   } else {
     timeWindowMin = info.start;
     timeWindowMax = info.end;
@@ -1335,8 +1343,8 @@ function onSelect(info) {
 function onDoubleClick(info) {
   chartMinMax = [null, null];
   chart.yAxis[0].setExtremes(null, null);  // resume auto setting min/max
-  considerUpdate(chart.yAxis[0].getExtremes().min,
-                 chart.yAxis[0].getExtremes().max);
+  considerUpdatingChart(chart.yAxis[0].getExtremes().min,
+                        chart.yAxis[0].getExtremes().max);
 }
 
 function makeTimeline() {
@@ -1517,6 +1525,25 @@ function timestampToDate(d) {
   var hms = intervalToHms((((h * 60) + m) * 60 + s) * 1000);
   var time = ymd + ' ' + hms;
   return time;
+}
+
+// computer time intervals needed for presenting 1) checkerboard pattern
+// for node-sharing apps and 2) segments of node usage in single app mode
+function computeIntervalsByPixel(intervalMin, intervalMax) {
+  var timeWindowMin = intervalMin;
+  var timeWindowMax = intervalMax;
+  if (chart !== null) {
+    timeWindowMin =  chart.yAxis[0].getExtremes().min;
+    timeWindowMax =  chart.yAxis[0].getExtremes().max;
+  }
+
+  // if chart is not made yet, the input min/max must be supplied by caller
+  console.assert(timeWindowMin !== undefined);
+
+  var intervalPerPixel = (timeWindowMax - timeWindowMin) /
+    $('#chart_container').width();
+  intervalPerSlice = intervalPerPixel * pixelsPerSlice;
+  intervalForOverlapping = intervalPerPixel * pixelsForOverlapping;
 }
 
 function dictionariesEqual(d1, d2) {
