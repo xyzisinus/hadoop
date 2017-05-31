@@ -24,6 +24,7 @@ var chartMinMax = [null, null];  // let chart decide, or set by timeline
 var appSelected = null;
 var nodeSharing = false;
 
+var fakeSeriesId = 'atlas_fake_series';  // used when there is no data yet
 var appSeriesPrefix = 'Atlas_app_';
 var appSharingSeriesPrefix = 'Atlas_app_sharing_';
 
@@ -40,10 +41,10 @@ function appInfo(appId) {
 }
 appInfo.prototype.seriesId = function() {
   return appSeriesPrefix + this.id;
-}
+};
 appInfo.prototype.sharingSeriesId = function() {
   return appSharingSeriesPrefix + this.id;
-}
+};
 
 var nodesProcessed = false;
 var nodeCollection = {};  // node id -> app usage, state, categoriesIdx, etc
@@ -91,6 +92,10 @@ function getRackCollection() {
   return (appSelected !== null) ? appRackCollection : rackCollection;
 }
 
+// min/max of all app intervals
+var intervalMinOfAll = Number.MAX_VALUE;
+var intervalMaxOfAll = Number.MIN_VALUE;
+
 // vertical spacing
 var bandHeight = 20;
 var chartHeightPadding = 40;
@@ -98,10 +103,9 @@ var collapsedRackMultiple = 3;  // multiple of node band for a collapsed rack
 var timelineHeight = 130;
 
 // When a node is used by multiple apps at the same time,
-// they show up on the bar like zebra stripes. each app has a small slice
-// of its color and the pattern repeats to cover the interval.  The
-// following controls the width of each slice.
-var pixelsPerSlice = 10;  // width of a slice, exactly 1/2 of band height
+// they are expressed in a checkerboard pattern for the given interval.
+// The following controls the size of each little square.
+var pixelsPerSlice = 10;  // width of a square, exactly 1/2 of band height
 var intervalPerSlice = 0;  // time interval covered by above constant
 
 // if single app view is selected and the app shares some nodes with other
@@ -115,12 +119,11 @@ var intervalPerSlice = 0;  // time interval covered by above constant
 var pixelsForOverlapping = 5;  // pixels to overlap
 var intervalForOverlapping = 0;  // time interval covered by above constant
 
-var fakeSeriesId = 'atlas_fake_series';
-
-// "now line" related
+// The vertical "now line" should neatly move along the bars of the current
+// apps.  To achieve this, we set the finish time of current apps uniformly
+// to timeInCurrentCycle obtained in each data refresh cycle.
 var mayStartNowLine = false;
-var currentTimeUsed = false;
-var timeInCurrentLoop = null;
+var timeInCurrentCycle = null;
 
 // timeline related
 var timelineBox = null;
@@ -183,14 +186,7 @@ function getDataFromServer() {
 function processData(data) {
   var inApps = [];
   var inNodes = [];
-
-  // If the app doesn't have the finish time, the finish time is now.  To keep
-  // current time uniform for different apps and nodes so that the "now" line
-  // fits well, we keep one copy of the current time for every use case in
-  // refresh cycle. currentTimeUsed becomes true, if the uniform time is used
-  // in the current loop so that "now" line will use the uniform time, too.
-  timeInCurrentLoop = new Date().getTime();
-  currentTimeUsed = false;  // will become true if used in the current loop
+  timeInCurrentCycle = new Date().getTime();
 
   if (catchServerData) {
     catchServerData = false;
@@ -219,10 +215,10 @@ function processData(data) {
 function makeChart() {
   addCollapseAllButton();
 
-  // When the window width changes, chart's width will not change automatically,
+  // When window width changes, chart's width will not change automatically,
   // because it's in a table cell in yarn's html page.
   // We need to find the size diff between window and container, and
-  // resize the chart using the new  window size minus diff.
+  // resize the chart using the new window size, minus diff.
   windowChartWidthDiff = window.innerWidth - $('#chart_container').width();
 
   $(window).resize(function() {
@@ -239,19 +235,6 @@ function makeChart() {
       useUTC : false
     }
   });
-
-  buildNodesUsage();  // scan uncollapsed nodes to handle overlapping app usage
-  for (var appId in apps) {
-    var appSeries = makeSeriesForOneApp(appId);
-    if (appSeries.data.length !== 0) {
-      series.push(appSeries);
-      chartProps.haveData = true;
-    }
-  }
-
-  if (!chartProps.haveData) {
-    series.push(makeFakeSeries());
-  }
 
   chart = new Highcharts.Chart({
     chart: {
@@ -294,6 +277,8 @@ function makeChart() {
     },
 
     tooltip: {
+      followPointer: true,
+      borderWidth: 3,
       style: {fontSize: '13pt', lineHeight: '20%'},
       formatter: function() {
         return makeTooltip(this);
@@ -317,19 +302,13 @@ function makeChart() {
         pointPadding: 0,
         groupPadding: 0
       }
-    },
-
-    series: series
+    }
   });
 
-  recordAppSeriesColors();
-  var needRedraw = addSharingApps();  // add polygons for node-sharing apps
-  if (needRedraw) {
-    chart.redraw();
-  }
-
+  // add fake series just in case there is no data
+  chart.addSeries(makeFakeSeries(), true);
+  updateChart();
   addRackButtons();
-  processTimeline();
 }
 
 function updateChart(cause) {
@@ -494,11 +473,13 @@ function updateAppState(inApp, nodesInUse, finished) {
   app.startTime = inApp.startTime;
   app.finishTime = Number(inApp.finishTime);
   if (app.finishTime === 0) {
-    app.finishTime = timeInCurrentLoop;
-    currentTimeUsed = true;
+    app.finishTime = timeInCurrentCycle;
   }
   app.serverState = inApp.state;
   app.nContainers = Object.keys(nodesInUse).length;
+
+  intervalMinOfAll = Math.min(app.startTime, intervalMinOfAll);
+  intervalMaxOfAll = Math.max(app.finishTime, intervalMaxOfAll);
 
   // go through the nodes used and record the duration of their use.
   // If a node is already on record, only change its finishTime.
@@ -535,8 +516,7 @@ function processApps(inApps) {
     } else {
       $.each(inApp.containers, function(c, container) {
         startTime = container.creationTime;
-        finishTime = timeInCurrentLoop;
-        currentTimeUsed = true;
+        finishTime = timeInCurrentCycle;
         var nodeId = (new nodeInfo(container.node)).id;
         nodesInUse[nodeId] = [startTime, finishTime];
       });
@@ -546,14 +526,14 @@ function processApps(inApps) {
   });
 }
 
-function   makeAppRackCollection() {
-  if (appSelected == null) {
+function makeAppRackCollection() {
+  if (appSelected === null) {
     appRackCollection = null;
     return;
   }
   appRackCollection = {};
 
-  for (node in apps[appSelected].nodesInUse) {
+  for (var node in apps[appSelected].nodesInUse) {
     var rack = new rackInfo(nodeCollection[node].rack);
     if (rack.id in appRackCollection) {
       appRackCollection[rack.id].nodes.push(node);
@@ -640,8 +620,12 @@ function addSharingApps(cause) {
 // for each node, find apps using it and cut usage into intervals each
 // of which is shared by the same set of apps.
 function buildNodesUsage() {
-  var timeWindowMin = 0;
-  var timeWindowMax = 0;
+  var timeWindowMin = chart.yAxis[0].getExtremes().min;
+  var timeWindowMax = chart.yAxis[0].getExtremes().max;
+  if (timeWindowMin === undefined) {
+    timeWindowMin = intervalMinOfAll;
+    timeWindowMax = intervalMaxOfAll;
+  }
   var haveNewData = false;
 
   for (var appId in apps) {
@@ -663,8 +647,7 @@ function buildNodesUsage() {
       var duration = app.nodesInUse[n];
       if (duration !== undefined) {
         data = accumulateUsage(data, appId, duration[0], duration[1]);
-        timeWindowMin = (timeWindowMin === 0) ? duration[0] :
-          Math.min(duration[0], timeWindowMin);
+        timeWindowMin = Math.min(duration[0], timeWindowMin);
         timeWindowMax = Math.max(duration[1], timeWindowMax);
       }
     });
@@ -988,7 +971,7 @@ function makeSeriesForOneApp(appId) {
   if (dataSet.length === 0) {
     dataSet.push(null);
   }
-  if (sharingSet.length == 0) {
+  if (sharingSet.length === 0) {
     sharingSet.push([null, null]);
   }
 
@@ -1024,10 +1007,9 @@ function updateNowLine() {
     return;
   }
   chart.yAxis[0].removePlotLine('current_time');  // may not exist yet
-  var current = (currentTimeUsed)? timeInCurrentLoop: new Date().getTime();
   chart.yAxis[0].addPlotLine({
     label: {text: 'now', style: {color: 'blue', fontWeight: 'bold'}},
-    value: current,
+    value: timeInCurrentCycle,
     width: 2,
     color: 'red',
     zIndex: 50,
@@ -1124,8 +1106,7 @@ function addRackButtons() {
 // when there is no apps, we need a fake series to show the nodes
 function makeFakeSeries() {
   var fakeData = [];
-  $.each(racks, function(r, rackId) {
-    var rack = rackCollection[rackId];
+  $.each(rackCollection, function(rackId, rack) {
     if (rack.expanded) {
       for (var n in rack.nodes) {
         fakeData.push([null, null]);
@@ -1135,6 +1116,7 @@ function makeFakeSeries() {
     }
   });
   var fakeSeries = {
+    type: 'columnrange',
     showInLegend:false,
     enableMouseTracking:false,
     color: '#ddd',
@@ -1532,7 +1514,7 @@ function timestampToDate(d) {
 function computeIntervalsByPixel(intervalMin, intervalMax) {
   var timeWindowMin = intervalMin;
   var timeWindowMax = intervalMax;
-  if (chart !== null) {
+  if (chart.yAxis[0].getExtremes().min !== undefined) {
     timeWindowMin =  chart.yAxis[0].getExtremes().min;
     timeWindowMax =  chart.yAxis[0].getExtremes().max;
   }
@@ -1552,10 +1534,10 @@ function dictionariesEqual(d1, d2) {
 
 String.prototype.isAppSeries = function() {
   return this.startsWith(appSeriesPrefix);
-}
+};
 String.prototype.isAppSharingSeries = function() {
   return this.startsWith(appSharingSeriesPrefix);
-}
+};
 Highcharts.error = function (code) {
   console.log('error', code);
-}
+};
