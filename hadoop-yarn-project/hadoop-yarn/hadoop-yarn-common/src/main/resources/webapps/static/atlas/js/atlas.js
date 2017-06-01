@@ -295,7 +295,7 @@ function makeChart() {
         events: {
           dblclick: function(event) {
             appSelected = (appSelected === this.name) ? null : this.name;
-            updateChart('singleAppFlip');
+            updateChart('layoutChanged');
           }
         },
         animation: false,
@@ -313,86 +313,36 @@ function makeChart() {
 
 function updateChart(cause) {
   var needRedraw = false;
-  var layoutChanged = false;
+  var layoutChanged = (cause === 'layoutChanged') ? true : false;
   var min = chart.yAxis[0].getExtremes().min;
   var max = chart.yAxis[0].getExtremes().max;
 
-  var rack, rackId;
-  if (cause === 'categoriesChanged' || cause === 'singleAppFlip') {
-    // this update is caused by rack collapse/expand or single app flip
-    var bandIds = [];
-    var lineIds = [];
-    var b, l;
-
-    newProps = makeCategories();
-    layoutChanged = true;
+  if (layoutChanged) {
     needRedraw = true;
-
-    chart.setSize($('#chart_container').width(), chartHeight, false);
-
-    // Remove all existing bands and lines before adding new ones.
-    // Must copy the band/line ids before removing.  highchart directly
-    // removes from MY data structures.  So must keep the ids separately.
-    for (b in chartProps.plotBands) {
-      bandIds.push(chartProps.plotBands[b].id);
-    }
-    for (b in bandIds) {
-      chart.xAxis[0].removePlotBand(bandIds[b]);
-    }
-    for (b in newProps.plotBands) {
-      chart.xAxis[0].addPlotBand(newProps.plotBands[b]);  // check after rack expand/collapse
-    }
-    for (l in chartProps.plotLines) {
-      lineIds.push(chartProps.plotLines[l].id);
-    }
-    for (l in lineIds) {
-      chart.xAxis[0].removePlotLine(lineIds[l]);
-    }
-    for (l in newProps.plotLines) {
-      chart.xAxis[0].addPlotLine(newProps.plotLines[l]);
-    }
-
-    for (rackId in rackCollection) {
-      rack = rackCollection[rackId];
-      if (chart.get(rack.seriesId()) !== undefined) {
-        chart.get(rack.seriesId()).remove(false);
-      }
-
-      if (rack.button !== null) {
-        rack.button.remove();  // remove the old buttons
-        rack.button = null;
-      }
-    }
-
-    chart.xAxis[0].setCategories(newProps.groupedCategories, false);
-    chart.xAxis[0].setExtremes(newProps.xMin, newProps.xMax);
-    newProps.haveData = chartProps.haveData;  // app data accumulate
-    chartProps = newProps;
+    updateLayout();  // also remove all rack data series
   }
 
-  // add rack series. If categories have changed, code above should have
-  // removed all existing rack series' already.
-  for (rackId in rackCollection) {
-    rack = rackCollection[rackId];
+  // add rack series. If layout has changed, old rack series have already
+  // been removed.  Otherwise, we still have the old rack series.
+  $.each(rackCollection, function(rackId, rack) {
     if (rack.expanded) {  // no rack series for expanded racks
-      continue;
+      return true;
     }
 
     var rackSeries = makeSeriesForOneRack(rackId);
-    if (rackSeries === null) {  // rack data unchanged since last update
-      continue;
+    if (rackSeries === null) {  // no load for this rack
+      return true;
     }
 
     needRedraw = true;
-    if (rackSeries.data.length !== 0) {
-      chartProps.haveData = true;
-    }
+    chartProps.haveData = true;  // app data accumulate
+
     if (chart.get(rack.seriesId()) === undefined) {
       chart.addSeries(rackSeries, false);
     } else {
       chart.get(rack.seriesId()).setData(rackSeries.data, false);
     }
-  }  // if (cause === 'categoriesChanged')
+  });
 
   // renew apps for uncollapsed nodes
   buildNodesUsage();
@@ -446,6 +396,55 @@ function updateChart(cause) {
   }
 
   processTimeline();  // "now" line is handled, too
+}
+
+function updateLayout() {
+  var bandIds = [];
+  var lineIds = [];
+  var b, l;
+
+  var newProps = makeCategories();
+  chart.setSize($('#chart_container').width(), chartHeight, false);
+
+  // Remove all existing bands and lines before adding new ones.
+  // Must save the band/line ids before removing because highchart directly
+  // removes them from MY data structures for better performance.
+  for (b in chartProps.plotBands) {  // save band ids
+    bandIds.push(chartProps.plotBands[b].id);
+  }
+  for (b in bandIds) {  // remove old bands
+    chart.xAxis[0].removePlotBand(bandIds[b]);
+  }
+  for (b in newProps.plotBands) {
+    chart.xAxis[0].addPlotBand(newProps.plotBands[b]);
+  }
+  for (l in chartProps.plotLines) {  // save line ids before removing lines
+    lineIds.push(chartProps.plotLines[l].id);
+  }
+  for (l in lineIds) {
+    chart.xAxis[0].removePlotLine(lineIds[l]);
+  }
+  for (l in newProps.plotLines) {
+    chart.xAxis[0].addPlotLine(newProps.plotLines[l]);
+  }
+
+  // remove rack data series, if any, and all rack buttons
+  for (rackId in rackCollection) {
+    rack = rackCollection[rackId];
+    if (chart.get(rack.seriesId()) !== undefined) {
+      chart.get(rack.seriesId()).remove(false);
+    }
+
+    if (rack.button !== null) {
+      rack.button.remove();
+      rack.button = null;
+    }
+  }
+
+  chart.xAxis[0].setCategories(newProps.groupedCategories, false);
+  chart.xAxis[0].setExtremes(newProps.xMin, newProps.xMax);
+  newProps.haveData = chartProps.haveData;  // transfer the bit beore copying
+  chartProps = newProps;
 }
 
 ///// incoming data processing /////
@@ -1032,7 +1031,7 @@ function addCollapseAllButton() {
       for (var g in rackCollection) {
         rackCollection[g].changeExpandState(!this.checked);
       }
-      updateChart('categoriesChanged');
+      updateChart('layoutChanged');
     }
   });
 }
@@ -1090,7 +1089,7 @@ function addRackButtons() {
 
       button.on('click', function() {
         rack.flipExpandState();
-        updateChart('categoriesChanged');
+        updateChart('layoutChanged');
 
         // change collaps-all button's state when all racks are collapsed.
         // but we don't want the handler to do any real work because it's
