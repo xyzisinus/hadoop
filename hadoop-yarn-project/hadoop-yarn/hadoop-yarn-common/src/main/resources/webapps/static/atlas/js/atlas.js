@@ -56,7 +56,7 @@ function nodeInfo(fullId) {
   this.appUsage = [];
 }
 
-var rackCollection = {};  // rack id -> nodes, expanding state, etc
+var allRackCollection = {};  // rack id -> nodes, expanding state, etc
 var appRackCollection = {};  // racks used by a single app
 function rackInfo(originalId) {
   this.originalId = originalId;
@@ -87,10 +87,6 @@ rackInfo.prototype.changeExpandState = function(expand) {
 rackInfo.prototype.flipExpandState = function() {
   this.changeExpandState(!this.expanded);
 };
-
-function getRackCollection() {
-  return (appSelected !== null) ? appRackCollection : rackCollection;
-}
 
 // min/max of all app intervals
 var intervalMinOfAll = Number.MAX_VALUE;
@@ -294,8 +290,11 @@ function makeChart() {
         cursor: 'pointer',
         events: {
           dblclick: function(event) {
-            appSelected = (appSelected === this.name) ? null : this.name;
-            updateChart('layoutChanged');
+            if (this.name in apps) {  // only work on app series
+              appSelected = (appSelected === this.name) ? null : this.name;
+              updateChart('layoutChanged');
+              collapseAllButton.prop('disabled', appSelected !== null);
+            }
           }
         },
         animation: false,
@@ -324,25 +323,27 @@ function updateChart(cause) {
 
   // add rack series. If layout has changed, old rack series have already
   // been removed.  Otherwise, we still have the old rack series.
-  $.each(rackCollection, function(rackId, rack) {
-    if (rack.expanded) {  // no rack series for expanded racks
-      return true;
-    }
+  if (appSelected === null) {
+    $.each(allRackCollection, function(rackId, rack) {
+      if (rack.expanded) {  // no rack series for expanded racks
+        return true;
+      }
 
-    var rackSeries = makeSeriesForOneRack(rackId);
-    if (rackSeries === null) {  // no load for this rack
-      return true;
-    }
+      var rackSeries = makeSeriesForOneRack(rackId);
+      if (rackSeries === null) {  // no load for this rack
+        return true;
+      }
 
-    needRedraw = true;
-    chartProps.haveData = true;  // app data accumulate
+      needRedraw = true;
+      chartProps.haveData = true;  // app data accumulate
 
-    if (chart.get(rack.seriesId()) === undefined) {
-      chart.addSeries(rackSeries, false);
-    } else {
-      chart.get(rack.seriesId()).setData(rackSeries.data, false);
-    }
-  });
+      if (chart.get(rack.seriesId()) === undefined) {
+        chart.addSeries(rackSeries, false);
+      } else {
+        chart.get(rack.seriesId()).setData(rackSeries.data, false);
+      }
+    });
+  }
 
   // renew apps for uncollapsed nodes
   buildNodesUsage();
@@ -428,9 +429,9 @@ function updateLayout() {
     chart.xAxis[0].addPlotLine(newProps.plotLines[l]);
   }
 
-  // remove rack data series, if any, and all rack buttons
-  for (rackId in rackCollection) {
-    rack = rackCollection[rackId];
+  // remove rack data series, if any, and all rack buttons.
+  // this is for all racks, even in signle app mode.
+  $.each(allRackCollection, function(rackId, rack) {
     if (chart.get(rack.seriesId()) !== undefined) {
       chart.get(rack.seriesId()).remove(false);
     }
@@ -439,7 +440,7 @@ function updateLayout() {
       rack.button.remove();
       rack.button = null;
     }
-  }
+  });
 
   chart.xAxis[0].setCategories(newProps.groupedCategories, false);
   chart.xAxis[0].setExtremes(newProps.xMin, newProps.xMax);
@@ -454,11 +455,14 @@ function intervalsOverlap(d1, d2) {
 }
 
 // update app state and save the current dataset for the app.
-// Note: finished app has an empty list of nodesInUse argument.
-function updateAppState(inApp, nodesInUse, finished) {
+function updateAppState(inApp, nodesInUse, isFinished) {
   var id = inApp.applicationId;
   if (id in apps && apps[id].finished) {
-    // now we know the app is finished from previous rounds
+    // when app state changes from running to finished as reflected by
+    // the isFinished parameter, the app still goes through
+    // the main body of this function one last time for the chart to
+    // reflect the lastest change.  Afterwards the app's haveNewData bit will
+    // remain false to avoid unnessary re-draws of the chart.
     return;
   }
 
@@ -467,13 +471,10 @@ function updateAppState(inApp, nodesInUse, finished) {
   }
   var app = apps[id];
 
-  app.finished = finished;
-  app.haveNewData = true;
-  app.startTime = inApp.startTime;
+  app.finished = isFinished;
+  app.haveNewData = true;  // become false when data is handed to highchart
+  app.startTime = Number(inApp.startTime);
   app.finishTime = Number(inApp.finishTime);
-  if (app.finishTime === 0) {
-    app.finishTime = timeInCurrentCycle;
-  }
   app.serverState = inApp.state;
   app.nContainers = Object.keys(nodesInUse).length;
 
@@ -482,11 +483,14 @@ function updateAppState(inApp, nodesInUse, finished) {
 
   // go through the nodes used and record the duration of their use.
   // If a node is already on record, only change its finishTime.
-  // xxx need to consider multiple apps on the same node.
   $.each(nodesInUse, function(n, duration) {
     if (n in app.nodesInUse) {
-      // xxx add two asserts: start time remains same and there is only one
-      // time section
+      // xxx the assert is to verify the assumption that each app uses
+      // a node for only one time interval.  If this assumption is correct,
+      // the code should be fixed.
+      console.assert(app.nodesInUse[n][0] === duration[0] &&
+                     app.nodesInUse[n][1] <= duration[1],
+                     'app', id, 'must use only one interval on node', n);
       app.nodesInUse[n][1] = duration[1];
     } else {
       app.nodesInUse[n] = [duration[0], duration[1]];
@@ -498,39 +502,38 @@ function processApps(inApps) {
   $.each(inApps, function(index, inApp) {
     var finishedApp = false;
     var nodesInUse = {};  // node -> [startTime, finishTime]
-    var finishTime = 0;
 
     if (inApp.state === 'FINISHED') {
       // If an app has already finished when Atlas is started,
       // we don't show the app because the server doesn't provide
-      // containers for a finished and we don't have interesting info to show
-      if (!(inApp.applicationId in apps)) {
+      // containers for a finished app.  However, if an app changes from
+      // running to finished, the client side already has the app's info
+      // to show.
+      if (!(inApp.applicationId in apps)) {  // we don't know this one
         return true;
       }
       finishedApp = true;
-    } else if (inApp.state !== 'RUNNING') {
-      // xxx pop up error then continue
-      console.log('invalid app state:', inApp.applicationId. inApp.state);
-      return true;  // still continue processing apps
-    } else {
+    } else if (inApp.state === 'RUNNING') {
       $.each(inApp.containers, function(c, container) {
         startTime = container.creationTime;
-        finishTime = timeInCurrentCycle;
         var nodeId = (new nodeInfo(container.node)).id;
-        nodesInUse[nodeId] = [startTime, finishTime];
+        nodesInUse[nodeId] = [startTime, timeInCurrentCycle];
       });
+    } else {
+      console.assert(false, 'invalid state', inApp.state,
+                     'for', inApp.applicationId);
     }
 
     updateAppState(inApp, nodesInUse, finishedApp);
   });
 }
 
+// in single app mode, find the rack/node subset used by the given app.
 function makeAppRackCollection() {
+  appRackCollection = {};
   if (appSelected === null) {
-    appRackCollection = null;
     return;
   }
-  appRackCollection = {};
 
   for (var node in apps[appSelected].nodesInUse) {
     var rack = new rackInfo(nodeCollection[node].rack);
@@ -560,17 +563,17 @@ function processNodes(inNodes) {
 
     // rackInfo is derived from node. a previous node may have built the rack
     var rack = new rackInfo(inNode.rack);
-    if (rack.id in rackCollection) {
-      rackCollection[rack.id].nodes.push(node.id);  // add node into rackInfo
+    if (rack.id in allRackCollection) {
+      allRackCollection[rack.id].nodes.push(node.id);  // add node into rack
     } else {
       rack.nodes = [node.id];
-      rackCollection[rack.id] = rack;
+      allRackCollection[rack.id] = rack;
     }
     node.rack = rack.id;
   });
 
   // racks and the nodes on each rack are sorted alphabetically
-  $.each(rackCollection, function(rackId, rack) {
+  $.each(allRackCollection, function(rackId, rack) {
     rack.nodes.sort();
   });
 
@@ -669,9 +672,9 @@ function buildNodesUsage() {
   computeIntervalsByPixel(timeWindowMin, timeWindowMax);
 }
 
+// rack series are not for single app mode
 function makeSeriesForOneRack(rackId) {
-  var rackCollection = getRackCollection();
-  var rack = rackCollection[rackId];
+  var rack = allRackCollection[rackId];
   var data = [];
 
   for (var appId in apps) {
@@ -1028,8 +1031,8 @@ function addCollapseAllButton() {
     off_label: 'none'
   }).change(function() {
     if (changeCollapseAllButtonWithAction) {
-      for (var g in rackCollection) {
-        rackCollection[g].changeExpandState(!this.checked);
+      for (var g in allRackCollection) {
+        allRackCollection[g].changeExpandState(!this.checked);
       }
       updateChart('layoutChanged');
     }
@@ -1044,7 +1047,7 @@ function addRackButtons() {
 
   var nodeLabelX = 0;  // x for expand button, align with node label
   var x, y;
-  var racks = Object.keys(rackCollection);
+  var racks = Object.keys(allRackCollection);
 
   // xxx Since there is no api to find the labels, I use a dirty way.
   // All labels are children of an element of xaxis-labels class.
@@ -1060,9 +1063,9 @@ function addRackButtons() {
   });
 
   $('.highcharts-xaxis-labels').children().each(function(i, label) {
-    if (label.textContent in rackCollection) {  // only care about rack label
+    if (label.textContent in allRackCollection) {  // check for rack label
       var rackId = label.textContent;
-      var rack = rackCollection[rackId];
+      var rack = allRackCollection[rackId];
 
       // if the rack is too small, there is no space for the expand button
       if (rack.nodes.length < collapsedRackMultiple && rack.expanded) {
@@ -1102,10 +1105,10 @@ function addRackButtons() {
   });
 }
 
-// when there is no apps, we need a fake series to show the nodes
+// when there are no apps, we need a fake series to show the nodes
 function makeFakeSeries() {
   var fakeData = [];
-  $.each(rackCollection, function(rackId, rack) {
+  $.each(allRackCollection, function(rackId, rack) {
     if (rack.expanded) {
       for (var n in rack.nodes) {
         fakeData.push([null, null]);
@@ -1167,7 +1170,8 @@ function makeCategories() {
   var allCollapsed = true;
 
   makeAppRackCollection();
-  var rackCollection = getRackCollection();
+  var rackCollection = (appSelected === null) ?
+    allRackCollection : appRackCollection;
 
   var racks = Object.keys(rackCollection).sort();
   $.each(racks, function(r, rackId) {
