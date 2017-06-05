@@ -46,7 +46,6 @@ appInfo.prototype.sharingSeriesId = function() {
   return appSharingSeriesPrefix + this.id;
 };
 
-var nodesProcessed = false;
 var nodeCollection = {};  // node id -> app usage, state, categoriesIdx, etc
 function nodeInfo(fullId) {
   this.fullId = fullId;
@@ -69,6 +68,7 @@ function rackInfo(originalId) {
   this.button = null;
   this.categoryIdx = -1;
   this.expanded = true;
+  this.series = null;
 }
 rackInfo.prototype.seriesId = function() {
   return 'Atlas_rack_' + this.id;
@@ -88,7 +88,8 @@ rackInfo.prototype.flipExpandState = function() {
   this.changeExpandState(!this.expanded);
 };
 
-// min/max of all app intervals
+// min/max of all app intervals.  they are useful in estimating the
+// time interval and pixel ratio when the chart doesn't have data yet.
 var intervalMinOfAll = Number.MAX_VALUE;
 var intervalMaxOfAll = Number.MIN_VALUE;
 
@@ -290,7 +291,7 @@ function makeChart() {
         cursor: 'pointer',
         events: {
           dblclick: function(event) {
-            if (this.name in apps) {  // only work on app series
+            if (this.name in apps) {  // only affect app series
               appSelected = (appSelected === this.name) ? null : this.name;
               updateChart('layoutChanged');
               collapseAllButton.prop('disabled', appSelected !== null);
@@ -326,22 +327,22 @@ function updateChart(cause) {
   if (appSelected === null) {
     $.each(allRackCollection, function(rackId, rack) {
       if (rack.expanded) {  // no rack series for expanded racks
+        hideSeries(rack.series);
         return true;
       }
 
-      var rackSeries = makeSeriesForOneRack(rackId);
-      if (rackSeries === null) {  // no load for this rack
+      if (rack.series === null ||
+          rack.series.timestamp !== timeInCurrentCycle) {
+        rack.series = makeSeriesForOneRack(rackId);
+      }
+      if (rack.series.data.length === 0) {  // rack not used by any app
         return true;
       }
 
       needRedraw = true;
       chartProps.haveData = true;  // app data accumulate
 
-      if (chart.get(rack.seriesId()) === undefined) {
-        chart.addSeries(rackSeries, false);
-      } else {
-        chart.get(rack.seriesId()).setData(rackSeries.data, false);
-      }
+      addOrUpdateSeries(rack.series);
     });
   }
 
@@ -432,9 +433,8 @@ function updateLayout() {
   // remove rack data series, if any, and all rack buttons.
   // this is for all racks, even in signle app mode.
   $.each(allRackCollection, function(rackId, rack) {
-    if (chart.get(rack.seriesId()) !== undefined) {
-      chart.get(rack.seriesId()).remove(false);
-    }
+    deleteSeries(rack.series);
+    rack.series = null;
 
     if (rack.button !== null) {
       rack.button.remove();
@@ -550,10 +550,10 @@ function makeAppRackCollection() {
   });
 }
 
-// Nodes from the server have rack property.  So rackCollection structure
-// is also made here.
+// Nodes from the server have rack property. so allRackCollection is also
+// made here.
 function processNodes(inNodes) {
-  if (nodesProcessed) {
+  if (Object.keys(nodeCollection).length > 0) {
     return;  // don't need re-process racks because they don't change
   }
 
@@ -576,14 +576,13 @@ function processNodes(inNodes) {
   $.each(allRackCollection, function(rackId, rack) {
     rack.nodes.sort();
   });
-
-  nodesProcessed = true;
 }
 
 ///// data related chart ops /////
 
 function recordAppSeriesColors() {
-  // all app has a seris even if it's all [null, null], to get its color
+  // an app has a series, even if its app data series is empty, when all
+  // nodes in use by it are shared wit other apps.
   // allocated by highchart. the color is used for the pending partition
   // series
   for (var s in chart.series) {
@@ -713,8 +712,10 @@ function makeSeriesForOneRack(rackId) {
 
   var rackSeries = {
     type: 'polygon',
-    showInLegend: false,
     id: rack.seriesId(),
+    seriesId: rack.seriesId(),  // duplicate id for easy reference
+    timestamp: timeInCurrentCycle,
+    showInLegend: false,
     name: rack.seriesId(),
     shadow: true,
     color: rack.seriesColor(),
@@ -722,7 +723,7 @@ function makeSeriesForOneRack(rackId) {
     data: dataSet
   };
 
-  return (dataSet.length === 0) ? null: rackSeries;
+  return rackSeries;
 }
 
 // Can be used to build usage for a rack (how many nodes are sharing each
@@ -982,6 +983,8 @@ function makeSeriesForOneApp(appId) {
   var appSeries = {
     type: 'columnrange',
     id: apps[appId].seriesId(),
+    seriesId: apps[appId].seriesId(),
+    timestamp: timeInCurrentCycle,
     name: appId,
     visible: visible,
     data: dataSet
@@ -991,8 +994,10 @@ function makeSeriesForOneApp(appId) {
   apps[appId].sharingSeries = sharingSet.length === 0 ? null :
     {
       type: 'polygon',
-      showInLegend: false,
       id: apps[appId].sharingSeriesId(),
+      seriesId: apps[appId].sharingSeriesId(),
+      timestamp: timeInCurrentCycle,
+      showInLegend: false,
       name: appId,
       visible: visible,
       data: sharingSet
@@ -1533,6 +1538,52 @@ function computeIntervalsByPixel(intervalMin, intervalMax) {
 
 function dictionariesEqual(d1, d2) {
   return (JSON.stringify(d1) === JSON.stringify(d2));
+}
+
+function hideSeries(series) {
+  if (series === null) {
+    return;
+  }
+  var chartSeries = chart.get(series.seriesId);
+  if (chartSeries !== undefined) {
+    console.log('hide', series.seriesId);
+    chartSeries.hide();
+  }
+}
+
+function showSeries(series) {
+  if (series === null) {
+    return;
+  }
+  var chartSeries = chart.get(series.seriesId);
+  if (chartSeries !== undefined) {
+    console.log('show', series.seriesId);
+    chartSeries.show();
+  }
+}
+
+function addOrUpdateSeries(series) {
+  if (series === null) {
+    return;
+  }
+  if (chart.get(series.seriesId) === undefined) {
+    console.log('add', series.seriesId);
+    chart.addSeries(series, false);
+  } else {
+    console.log('update', series.seriesId);
+    chart.get(series.seriesId).setData(series.data, false);
+  }
+}
+
+function deleteSeries(series) {
+  if (series === null) {
+    return;
+  }
+  var chartSeries = chart.get(series.seriesId);
+  if (chartSeries !== undefined) {
+    console.log('delete', series.seriesId);
+    chartSeries.remove();
+  }
 }
 
 String.prototype.isAppSeries = function() {
