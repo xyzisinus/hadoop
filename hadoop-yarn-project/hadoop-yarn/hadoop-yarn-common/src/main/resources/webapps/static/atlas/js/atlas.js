@@ -293,7 +293,7 @@ function makeChart() {
           dblclick: function(event) {
             if (this.name in apps) {  // only affect app series
               appSelected = (appSelected === this.name) ? null : this.name;
-              updateChart('layoutChanged');
+              updateChart('singleAppModeFlip');
               collapseAllButton.prop('disabled', appSelected !== null);
             }
           }
@@ -313,21 +313,23 @@ function makeChart() {
 
 function updateChart(cause) {
   var needRedraw = false;
-  var layoutChanged = (cause === 'layoutChanged') ? true : false;
   var min = chart.yAxis[0].getExtremes().min;
   var max = chart.yAxis[0].getExtremes().max;
+  var layoutChanged = cause === 'rackButtonClick' ||
+    cause === 'singleAppModeFlip';
+
+  console.log('update chart', layoutChanged, cause);
 
   if (layoutChanged) {
     needRedraw = true;
-    updateLayout();  // also remove all rack data series
+    updateLayout(cause);  // also remove all rack data series
   }
 
-  // add rack series. If layout has changed, old rack series have already
-  // been removed.  Otherwise, we still have the old rack series.
+  // add rack series. If layout has changed due to single app mode flip or
+  // rack button click, old rack series have already been removed or hidden.
   if (appSelected === null) {
     $.each(allRackCollection, function(rackId, rack) {
       if (rack.expanded) {  // no rack series for expanded racks
-        hideSeries(rack.series);
         return true;
       }
 
@@ -343,6 +345,8 @@ function updateChart(cause) {
       chartProps.haveData = true;  // app data accumulate
 
       addOrUpdateSeries(rack.series);
+      // series might be hidden in single app mode.  bring it out.
+      showSeries(rack.series);
     });
   }
 
@@ -400,7 +404,7 @@ function updateChart(cause) {
   processTimeline();  // "now" line is handled, too
 }
 
-function updateLayout() {
+function updateLayout(cause) {
   var bandIds = [];
   var lineIds = [];
   var b, l;
@@ -430,15 +434,21 @@ function updateLayout() {
     chart.xAxis[0].addPlotLine(newProps.plotLines[l]);
   }
 
-  // remove rack data series, if any, and all rack buttons.
-  // this is for all racks, even in signle app mode.
+  // remove rack buttons.  If layout change is due to rack collapse/expand,
+  // all rack series' are removed because their positions on the categories
+  // are changed.  For single app mode flip, the existing rack series still
+  // may be useful.  So just hide it.
   $.each(allRackCollection, function(rackId, rack) {
-    deleteSeries(rack.series);
-    rack.series = null;
-
     if (rack.button !== null) {
       rack.button.remove();
       rack.button = null;
+    }
+
+    if (cause === 'rackButtonClick') {
+      deleteSeries(rack.series);
+      rack.series = null;
+    } else if (appSelected !== null) {
+      hideSeries(rack.series);
     }
   });
 
@@ -713,14 +723,16 @@ function makeSeriesForOneRack(rackId) {
   var rackSeries = {
     type: 'polygon',
     id: rack.seriesId(),
-    seriesId: rack.seriesId(),  // duplicate id for easy reference
-    timestamp: timeInCurrentCycle,
+    visible: true,
     showInLegend: false,
     name: rack.seriesId(),
     shadow: true,
     color: rack.seriesColor(),
     enableMouseTracking: false,
-    data: dataSet
+    data: dataSet,
+    // our own properties below
+    seriesId: rack.seriesId(),  // duplicate id for easy reference
+    timestamp: timeInCurrentCycle
   };
 
   return rackSeries;
@@ -1039,7 +1051,7 @@ function addCollapseAllButton() {
       for (var g in allRackCollection) {
         allRackCollection[g].changeExpandState(!this.checked);
       }
-      updateChart('layoutChanged');
+      updateChart('rackButtonClick');
     }
   });
 }
@@ -1097,7 +1109,7 @@ function addRackButtons() {
 
       button.on('click', function() {
         rack.flipExpandState();
-        updateChart('layoutChanged');
+        updateChart('rackButtonClick');
 
         // change collaps-all button's state when all racks are collapsed.
         // but we don't want the handler to do any real work because it's
@@ -1548,6 +1560,7 @@ function hideSeries(series) {
   if (chartSeries !== undefined) {
     console.log('hide', series.seriesId);
     chartSeries.hide();
+    chartSeries.visible = false;
   }
 }
 
@@ -1559,6 +1572,7 @@ function showSeries(series) {
   if (chartSeries !== undefined) {
     console.log('show', series.seriesId);
     chartSeries.show();
+    chartSeries.visible = true;
   }
 }
 
