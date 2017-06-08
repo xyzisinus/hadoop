@@ -329,29 +329,37 @@ function updateChart(cause) {
   // rack button click, old rack series have already been removed or hidden.
   if (appSelected === null) {
     $.each(allRackCollection, function(rackId, rack) {
-      if (rack.expanded) {  // no rack series for expanded racks
+      if (rack.expanded) {  // no action for expanded racks
         return true;
       }
 
-      if (rack.series === null ||
+      var newSeries = null;
+      if (rack.series === null || cause === 'rackButtonClick' ||
           rack.series.timestamp !== timeInCurrentCycle) {
-        rack.series = makeSeriesForOneRack(rackId);
-      }
-      if (rack.series.data.length === 0) {  // rack not used by any app
-        return true;
-      }
+        newSeries = makeSeriesForOneRack(rackId);
+        if (newSeries.data.length === 0) {  // rack not used by any app
+          return true;
+        }
 
-      needRedraw = true;
-      chartProps.haveData = true;  // app data accumulate
-
-      addOrUpdateSeries(rack.series);
-      // series might be hidden in single app mode.  bring it out.
-      showSeries(rack.series);
+        needRedraw = true;
+        chartProps.haveData = true;  // app data accumulate
+        rack.series = newSeries;
+        addOrUpdateSeries(rack.series);
+      } else {
+        // series might be hidden in single app mode.  bring it out.
+        showSeries(rack.series);
+      }
     });
   }
 
-  // renew apps for uncollapsed nodes
-  buildNodesUsage();
+  buildNodesUsage();  // scan nodes to build app series'
+
+  // there are two types of app series', the column range type (like a bar)
+  // and the polygon type (like checker board), to represent node sharing
+  // apps.  Both types are generated above.
+  // But we add all the bar series here first so that highcharts
+  // can assign a color to each app.  Only then we can use the color to
+  // form the checkerboard of apps, each in the color assigned to the app.
   for (var appId in apps) {
     var app = apps[appId];
     var seriesId = apps[appId].seriesId();
@@ -1560,7 +1568,6 @@ function hideSeries(series) {
   if (chartSeries !== undefined) {
     console.log('hide', series.seriesId);
     chartSeries.hide();
-    chartSeries.visible = false;
   }
 }
 
@@ -1572,7 +1579,6 @@ function showSeries(series) {
   if (chartSeries !== undefined) {
     console.log('show', series.seriesId);
     chartSeries.show();
-    chartSeries.visible = true;
   }
 }
 
